@@ -33,6 +33,8 @@ Ergonomic commands:
 
 Location commands use 1-based `line` and `col`. If `col` is omitted, the adapter uses the first identifier on that line; pass `:col` when a line contains multiple identifiers.
 
+If `refs` returns a warning about empty Serena references, verify with `rg <symbol>` before assuming the symbol is unused.
+
 Runtime errors return JSON on stderr and a non-zero exit code. Argument parsing errors may be clap's normal text output.
 
 The adapter starts Serena with an explicit project path, `--context=codex`, and streamable HTTP on localhost. It writes agent-agnostic runtime state to `.serena/serena-rs/state.json` and returns stable JSON for runtime success and failure. Successful command output includes `command_id` for `explain-empty`.

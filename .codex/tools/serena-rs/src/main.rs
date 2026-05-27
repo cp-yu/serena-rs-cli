@@ -464,13 +464,26 @@ fn refs(ws: &Workspace, args: RefsArgs) -> Result<()> {
         "find_referencing_symbols",
         json!({ "relative_path": relative_path, "name_path": name_path }),
     )?;
+    let warnings = if empty_reference_result(&references) {
+        vec![format!(
+            "Serena returned no references for `{name_path}`; verify with `rg {}` before assuming it is unused.",
+            query.name
+        )]
+    } else {
+        Vec::new()
+    };
     let mut data = Map::new();
     data.insert("resolved_symbol".into(), declaration.clone());
     data.insert("references".into(), references);
     if args.include_declaration {
         data.insert("declaration".into(), declaration);
     }
-    print_ok("find_referencing_symbols", &ws.root, Value::Object(data))
+    print_ok_with_warnings(
+        "find_referencing_symbols",
+        &ws.root,
+        Value::Object(data),
+        warnings,
+    )
 }
 
 fn declaration(ws: &Workspace, loc: Location) -> Result<()> {
@@ -1095,6 +1108,22 @@ fn symbol_target(result: &Value) -> Result<(String, String)> {
     Ok((relative_path.to_owned(), name_path.to_owned()))
 }
 
+fn empty_reference_result(result: &Value) -> bool {
+    let text = result
+        .get("structuredContent")
+        .and_then(|v| v.get("result"))
+        .and_then(Value::as_str)
+        .or_else(|| {
+            result
+                .get("content")
+                .and_then(Value::as_array)
+                .and_then(|items| items.first())
+                .and_then(|item| item.get("text"))
+                .and_then(Value::as_str)
+        });
+    matches!(text.map(str::trim), Some("{}"))
+}
+
 fn serena_text_error(result: &Value) -> Option<String> {
     let text = result
         .get("structuredContent")
@@ -1147,6 +1176,15 @@ fn record_command(project: &Path, command_id: &str, payload: &Value) -> Result<(
 }
 
 fn print_ok(tool: &str, project: &Path, data: Value) -> Result<()> {
+    print_ok_with_warnings(tool, project, data, Vec::new())
+}
+
+fn print_ok_with_warnings(
+    tool: &str,
+    project: &Path,
+    data: Value,
+    warnings: Vec<String>,
+) -> Result<()> {
     let command_id = command_id(tool);
     let payload = json!({
         "ok": true,
@@ -1154,7 +1192,7 @@ fn print_ok(tool: &str, project: &Path, data: Value) -> Result<()> {
         "tool": tool,
         "project": project,
         "data": data,
-        "warnings": []
+        "warnings": warnings
     });
     record_command(project, payload["command_id"].as_str().unwrap(), &payload)?;
     println!("{}", serde_json::to_string_pretty(&payload).unwrap());
@@ -1247,5 +1285,15 @@ mod tests {
 
         assert!(id.ends_with("-find_symbol"));
         assert!(id.contains(&format!("-{}-", std::process::id())));
+    }
+
+    #[test]
+    fn detects_empty_reference_result() {
+        let result = json!({
+            "content": [{ "text": "{}", "type": "text" }],
+            "structuredContent": { "result": "{}" }
+        });
+
+        assert!(empty_reference_result(&result));
     }
 }

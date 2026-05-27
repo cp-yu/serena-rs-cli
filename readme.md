@@ -142,6 +142,8 @@ Successful commands are recorded under `.serena/serena-rs/commands/` so `explain
 
 Locations use 1-based `line` and `col`. If `col` is omitted, the adapter uses the first identifier on that line. Pass `:col` when a line contains multiple identifiers.
 
+If `refs` resolves a symbol but Serena returns `{}`, the command succeeds with a warning to verify with `rg` before treating the symbol as unused.
+
 ```bash
 .codex/tools/serena-rs.sh diagnostics src/main.rs
 ```
