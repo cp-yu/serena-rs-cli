@@ -342,6 +342,9 @@ impl McpClient {
         {
             bail!("Serena tool `{name}` returned an error: {result}");
         }
+        if let Some(error) = serena_text_error(&result) {
+            bail!("Serena tool `{name}` returned an error: {error}");
+        }
         Ok(result)
     }
 
@@ -638,7 +641,8 @@ fn start_serena(ws: &Workspace, port: u16) -> Result<(Child, String)> {
     let mut command = serena_command(ws);
     command.args([
         "start-mcp-server",
-        "--project-from-cwd",
+        "--project",
+        &ws.root.to_string_lossy(),
         "--context=codex",
         "--transport",
         "streamable-http",

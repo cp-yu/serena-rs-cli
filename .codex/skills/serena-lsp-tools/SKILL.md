@@ -31,6 +31,6 @@ Ergonomic commands:
 - `cache clear`
 - `server logs`
 
-The adapter starts Serena with `--project-from-cwd`, `--context=codex`, and streamable HTTP on localhost. It writes state to `.codex/tmp/serena-rs/state.json` and returns stable JSON for success and failure. Successful command output includes `command_id` for `explain-empty`.
+The adapter starts Serena with an explicit project path, `--context=codex`, and streamable HTTP on localhost. It writes state to `.codex/tmp/serena-rs/state.json` and returns stable JSON for success and failure. Successful command output includes `command_id` for `explain-empty`.
 
 Do not use this skill for file reads, shell execution, text search, or memory operations. Those are intentionally outside the adapter surface.
