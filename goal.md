@@ -78,10 +78,10 @@
     serena-rs declaration <file:line[:col]>
     serena-rs refs <file:line[:col]> [--include-declaration]
     serena-rs diagnostics <file>
-    serena-rs rename <file:line[:col]> <new-name> [--dry-run|--apply]
-    serena-rs replace-body <symbol-path> --stdin
-    serena-rs insert-before <symbol-path> --stdin
-    serena-rs insert-after <symbol-path> --stdin
+    serena-rs rename <file>@<symbol-path> <new-name> --apply
+    serena-rs replace-body <file>@<symbol-path> --stdin --apply
+    serena-rs insert-before <file>@<symbol-path> --stdin --apply
+    serena-rs insert-after <file>@<symbol-path> --stdin --apply
 
     输出默认 JSON：
 
@@ -111,7 +111,7 @@
     2. 分配端口：默认 127.0.0.1:9121，冲突则查 state 文件或自动换端口。
     3. 写 state：
 
-    .codex/tmp/serena-rs/state.json
+    .serena/serena-rs/state.json
 
     内容：
 
@@ -192,15 +192,11 @@
 
     理由：agent 已有 shell/read/rg；重复工具只会增加风险和上下文噪音。
 
-    写操作默认 dry-run：
+    写操作不伪造 dry-run。真正写入必须显式传 --apply：
 
-    serena-rs rename src/a.rs:10 NewName
+    serena-rs rename src/a.rs@OldName NewName --apply
 
-    只预览 workspace edit 或 Serena 返回内容。真正写入必须：
-
-    serena-rs rename src/a.rs:10 NewName --apply
-
-    如果 Serena tool 本身没有 dry-run，就第一版不要暴露 apply 型命令，先只做 read-only 查询。不要伪造安全。
+    如果 Serena tool 本身没有 dry-run，就不要在 adapter 中伪造预览。
 
     第一阶段 MVP
     只做 read-only：
@@ -269,5 +265,4 @@
     .codex/tools/serena-rs/target/release/serena-rs refs src/main.rs:42
 
      完成之后需要在本项目完成测试，不断迭代直到可用。然后形成skills在本项目层级，其他地方使用可以从本项目文件夹下复制使用。
-
 
