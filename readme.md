@@ -78,6 +78,8 @@ serena_command = "serena"
 
 If the configured/default port is busy, the adapter searches the next available localhost port.
 
+Runtime state is project-local and agent-agnostic under `.serena-rs/`. It is shared by Codex, Claude Code, and any other caller using `serena-rs`.
+
 ## Output
 
 Successful commands print JSON:
@@ -107,7 +109,7 @@ Failures also print JSON:
 
 Runtime failures use this JSON shape on stderr and return a non-zero exit code. Argument parsing errors come from clap and may use normal CLI error text.
 
-Successful commands are recorded under `.codex/tmp/serena-rs/commands/` so `explain-empty` can inspect prior output.
+Successful commands are recorded under `.serena-rs/commands/` so `explain-empty` can inspect prior output.
 
 ## Read-Only Commands
 
@@ -211,10 +213,10 @@ The adapter:
 - Finds the project root from `.git` or `.serena/project.yml`
 - Starts Serena with an explicit project path and `--context=codex`
 - Uses streamable HTTP on `127.0.0.1`
-- Writes state to `.codex/tmp/serena-rs/state.json`
+- Writes state to `.serena-rs/state.json`
 - Reuses a healthy server for repeated calls in the same project
 - Removes stale state when the server is no longer reachable
-- Uses a project lock at `.codex/tmp/serena-rs/lock`
+- Uses a project lock at `.serena-rs/lock`
 - Uses a global startup lock at `$HOME/.cache/serena-rs/startup.lock`
 - Writes state and command history atomically
 

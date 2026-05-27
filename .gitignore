@@ -2,3 +2,4 @@
 .codex/tmp/
 .codex/tools/serena-rs/target/
 .serena/
+.serena-rs/
