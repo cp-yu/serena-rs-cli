@@ -438,25 +438,7 @@ fn refs(ws: &Workspace, args: RefsArgs) -> Result<()> {
     let state = ensure_server(ws)?;
     let mut mcp = McpClient::connect(state.port)?;
     mcp.initialize()?;
-    let declaration_result = mcp.call_tool(
-        "find_declaration",
-        json!({ "relative_path": loc.relative_path, "regex": query.regex }),
-    )?;
-    let (declaration, relative_path, name_path) = match symbol_target(&declaration_result) {
-        Ok((relative_path, name_path)) => (declaration_result, relative_path, name_path),
-        Err(_) => {
-            let symbol = mcp.call_tool(
-                "find_symbol",
-                json!({
-                    "name_path_pattern": query.name,
-                    "relative_path": loc.relative_path,
-                    "max_matches": 1
-                }),
-            )?;
-            let (relative_path, name_path) = symbol_target(&symbol)?;
-            (symbol, relative_path, name_path)
-        }
-    };
+    let (declaration, relative_path, name_path) = resolve_symbol_at(&mut mcp, &loc, &query)?;
     let references = mcp.call_tool(
         "find_referencing_symbols",
         json!({ "relative_path": relative_path, "name_path": name_path }),
@@ -475,12 +457,23 @@ fn declaration(ws: &Workspace, loc: Location) -> Result<()> {
     let state = ensure_server(ws)?;
     let mut mcp = McpClient::connect(state.port)?;
     mcp.initialize()?;
+    let (declaration, _, _) = resolve_symbol_at(&mut mcp, &loc, &query)?;
+    print_ok("find_declaration", &ws.root, declaration)
+}
+
+fn resolve_symbol_at(
+    mcp: &mut McpClient,
+    loc: &Location,
+    query: &IdentifierQuery,
+) -> Result<(Value, String, String)> {
     let declaration = mcp.call_tool(
         "find_declaration",
         json!({ "relative_path": loc.relative_path, "regex": query.regex }),
-    )?;
-    if serena_text_error(&declaration).is_none() {
-        return print_ok("find_declaration", &ws.root, declaration);
+    );
+    if let Ok(declaration) = declaration {
+        if let Ok((relative_path, name_path)) = symbol_target(&declaration) {
+            return Ok((declaration, relative_path, name_path));
+        }
     }
     let symbol = mcp.call_tool(
         "find_symbol",
@@ -490,7 +483,8 @@ fn declaration(ws: &Workspace, loc: Location) -> Result<()> {
             "max_matches": 1
         }),
     )?;
-    print_ok("find_declaration", &ws.root, symbol)
+    let (relative_path, name_path) = symbol_target(&symbol)?;
+    Ok((symbol, relative_path, name_path))
 }
 
 fn call_tool(ws: &Workspace, tool: &str, args: Value) -> Result<()> {
