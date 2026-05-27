@@ -1,14 +1,15 @@
 use anyhow::{anyhow, bail, Context, Result};
 use chrono::Utc;
 use clap::{Args, Parser, Subcommand};
+use fs2::FileExt;
 use reqwest::blocking::{Client, Response};
 use reqwest::header::{ACCEPT, CONTENT_TYPE};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use std::collections::BTreeMap;
 use std::env;
-use std::fs;
-use std::io::Read;
+use std::fs::{self, File, OpenOptions};
+use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -21,6 +22,8 @@ const PROTOCOL_VERSION: &str = "2025-06-18";
 const STATE_PATH: &str = ".codex/tmp/serena-rs/state.json";
 const CONFIG_PATH: &str = ".codex/serena-rs.toml";
 const COMMANDS_DIR: &str = ".codex/tmp/serena-rs/commands";
+const LOCK_PATH: &str = ".codex/tmp/serena-rs/lock";
+const STARTUP_LOCK_PATH: &str = ".cache/serena-rs/startup.lock";
 
 #[derive(Parser)]
 #[command(
@@ -167,6 +170,15 @@ struct SymbolPath {
     name_path: String,
 }
 
+enum LockMode {
+    Shared,
+    Exclusive,
+}
+
+struct FileLock {
+    file: File,
+}
+
 fn main() {
     let result = run();
     if let Err(err) = result {
@@ -182,7 +194,8 @@ fn run() -> Result<()> {
     match cli.command {
         Cmd::Status => status(&ws),
         Cmd::Start => {
-            let state = ensure_server(&ws)?;
+            let _lock = project_lock(&ws, LockMode::Exclusive)?;
+            let state = ensure_server_unlocked(&ws)?;
             print_ok(
                 "start",
                 &ws.root,
@@ -192,7 +205,7 @@ fn run() -> Result<()> {
         }
         Cmd::Stop => stop(&ws),
         Cmd::Health => {
-            let state = ensure_server(&ws)?;
+            let (_lock, state) = read_server(&ws)?;
             let mut mcp = McpClient::connect(state.port)?;
             mcp.initialize()?;
             let tools = mcp.list_tools()?;
@@ -231,6 +244,7 @@ fn run() -> Result<()> {
             json!({ "relative_path": normalize_relative(&ws.root, &args.file)? }),
         ),
         Cmd::Rename(args) => {
+            let _lock = project_lock(&ws, LockMode::Exclusive)?;
             require_apply(args.apply)?;
             let target = parse_symbol_path(&ws.root, &args.symbol_path)?;
             let changed_file = target.relative_path.clone();
@@ -272,6 +286,12 @@ impl Workspace {
 
     fn state_path(&self) -> PathBuf {
         self.root.join(STATE_PATH)
+    }
+}
+
+impl Drop for FileLock {
+    fn drop(&mut self) {
+        let _ = self.file.unlock();
     }
 }
 
@@ -418,6 +438,7 @@ fn status(ws: &Workspace) -> Result<()> {
 }
 
 fn stop(ws: &Workspace) -> Result<()> {
+    let _lock = project_lock(ws, LockMode::Exclusive)?;
     let Some(state) = read_state(ws)? else {
         return print_ok("stop", &ws.root, json!({ "stopped": false }));
     };
@@ -435,7 +456,7 @@ fn stop(ws: &Workspace) -> Result<()> {
 fn refs(ws: &Workspace, args: RefsArgs) -> Result<()> {
     let loc = parse_location(&ws.root, &args.location)?;
     let query = identifier_query_at(&ws.root.join(&loc.relative_path), loc.line, loc.col)?;
-    let state = ensure_server(ws)?;
+    let (_lock, state) = read_server(ws)?;
     let mut mcp = McpClient::connect(state.port)?;
     mcp.initialize()?;
     let (declaration, relative_path, name_path) = resolve_symbol_at(&mut mcp, &loc, &query)?;
@@ -454,7 +475,7 @@ fn refs(ws: &Workspace, args: RefsArgs) -> Result<()> {
 
 fn declaration(ws: &Workspace, loc: Location) -> Result<()> {
     let query = identifier_query_at(&ws.root.join(&loc.relative_path), loc.line, loc.col)?;
-    let state = ensure_server(ws)?;
+    let (_lock, state) = read_server(ws)?;
     let mut mcp = McpClient::connect(state.port)?;
     mcp.initialize()?;
     let (declaration, _, _) = resolve_symbol_at(&mut mcp, &loc, &query)?;
@@ -488,7 +509,7 @@ fn resolve_symbol_at(
 }
 
 fn call_tool(ws: &Workspace, tool: &str, args: Value) -> Result<()> {
-    let state = ensure_server(ws)?;
+    let (_lock, state) = read_server(ws)?;
     let mut mcp = McpClient::connect(state.port)?;
     mcp.initialize()?;
     let data = mcp.call_tool(tool, args)?;
@@ -496,6 +517,7 @@ fn call_tool(ws: &Workspace, tool: &str, args: Value) -> Result<()> {
 }
 
 fn edit_symbol(ws: &Workspace, tool: &str, args: EditSymbolArgs) -> Result<()> {
+    let _lock = project_lock(ws, LockMode::Exclusive)?;
     require_apply(args.apply)?;
     if !args.stdin {
         bail!("write command requires --stdin");
@@ -528,7 +550,7 @@ fn require_apply(apply: bool) -> Result<()> {
 }
 
 fn call_tool_data(ws: &Workspace, tool: &str, args: Value) -> Result<Value> {
-    let state = ensure_server(ws)?;
+    let state = ensure_server_unlocked(ws)?;
     let mut mcp = McpClient::connect(state.port)?;
     mcp.initialize()?;
     mcp.call_tool(tool, args)
@@ -549,7 +571,10 @@ fn locate(ws: &Workspace, args: LocateArgs) -> Result<()> {
             json!(normalize_relative(&ws.root, file)?),
         );
     }
-    let data = call_tool_data(ws, "find_symbol", Value::Object(params))?;
+    let (_lock, state) = read_server(ws)?;
+    let mut mcp = McpClient::connect(state.port)?;
+    mcp.initialize()?;
+    let data = mcp.call_tool("find_symbol", Value::Object(params))?;
     print_ok("locate", &ws.root, data)
 }
 
@@ -577,10 +602,20 @@ fn explain_empty(ws: &Workspace, args: ExplainEmptyArgs) -> Result<()> {
 }
 
 fn cache_clear(ws: &Workspace) -> Result<()> {
-    let tmp = ws.root.join(".codex/tmp/serena-rs");
-    let removed = tmp.exists();
+    let _lock = project_lock(ws, LockMode::Exclusive)?;
+    if let Some(state) = read_state(ws)? {
+        if state.project == ws.root && (process_alive(state.pid) || mcp_ready(state.port)) {
+            bail!("Serena server is running; run `serena-rs stop` before `serena-rs cache clear`");
+        }
+    }
+    let commands = ws.root.join(COMMANDS_DIR);
+    let state = ws.state_path();
+    let removed = commands.exists() || state.exists();
     if removed {
-        fs::remove_dir_all(&tmp)?;
+        let _ = fs::remove_file(state);
+        if commands.exists() {
+            fs::remove_dir_all(commands)?;
+        }
     }
     print_ok_unrecorded("cache_clear", &ws.root, json!({ "removed": removed }))
 }
@@ -596,11 +631,29 @@ fn server_logs(ws: &Workspace) -> Result<()> {
     print_ok("server_logs", &ws.root, json!({ "logs": logs }))
 }
 
-fn ensure_server(ws: &Workspace) -> Result<State> {
-    if let Some(state) = read_state(ws)? {
-        if state.project == ws.root && mcp_ready(state.port) {
-            return Ok(state);
-        }
+fn read_server(ws: &Workspace) -> Result<(FileLock, State)> {
+    let lock = project_lock(ws, LockMode::Shared)?;
+    if let Some(state) = healthy_state(ws)? {
+        return Ok((lock, state));
+    }
+    drop(lock);
+
+    let lock = project_lock(ws, LockMode::Exclusive)?;
+    let state = ensure_server_unlocked(ws)?;
+    Ok((lock, state))
+}
+
+fn ensure_server_unlocked(ws: &Workspace) -> Result<State> {
+    if let Some(state) = healthy_state(ws)? {
+        return Ok(state);
+    }
+
+    let _startup_lock = startup_lock()?;
+    if let Some(state) = healthy_state(ws)? {
+        return Ok(state);
+    }
+
+    if read_state(ws)?.is_some() {
         let _ = fs::remove_file(ws.state_path());
     }
 
@@ -701,10 +754,66 @@ fn read_state(ws: &Workspace) -> Result<Option<State>> {
 
 fn write_state(ws: &Workspace, state: &State) -> Result<()> {
     let path = ws.state_path();
+    atomic_write(&path, &serde_json::to_vec_pretty(state)?)?;
+    Ok(())
+}
+
+fn healthy_state(ws: &Workspace) -> Result<Option<State>> {
+    let Some(state) = read_state(ws)? else {
+        return Ok(None);
+    };
+    if state.project == ws.root && mcp_ready(state.port) {
+        return Ok(Some(state));
+    }
+    Ok(None)
+}
+
+fn project_lock(ws: &Workspace, mode: LockMode) -> Result<FileLock> {
+    lock_file(&ws.root.join(LOCK_PATH), mode)
+}
+
+fn startup_lock() -> Result<FileLock> {
+    let home = env::var("HOME").context("HOME is required for Serena startup lock")?;
+    lock_file(
+        &Path::new(&home).join(STARTUP_LOCK_PATH),
+        LockMode::Exclusive,
+    )
+}
+
+fn lock_file(path: &Path, mode: LockMode) -> Result<FileLock> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
-    fs::write(path, serde_json::to_vec_pretty(state)?)?;
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .open(path)?;
+    match mode {
+        LockMode::Shared => file.lock_shared()?,
+        LockMode::Exclusive => file.lock_exclusive()?,
+    }
+    Ok(FileLock { file })
+}
+
+fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let tmp = path.with_extension(format!(
+        "tmp.{}.{}",
+        std::process::id(),
+        Utc::now().timestamp_micros()
+    ));
+    {
+        let mut file = File::create(&tmp)?;
+        file.write_all(bytes)?;
+        file.sync_all()?;
+    }
+    fs::rename(&tmp, path).with_context(|| {
+        let _ = fs::remove_file(&tmp);
+        format!("failed to replace {}", path.display())
+    })?;
     Ok(())
 }
 
@@ -744,6 +853,7 @@ fn command_exists(program: &str) -> bool {
 fn process_alive(pid: u32) -> bool {
     Command::new("kill")
         .args(["-0", &pid.to_string()])
+        .stderr(Stdio::null())
         .status()
         .map(|status| status.success())
         .unwrap_or(false)
@@ -1032,15 +1142,12 @@ fn command_path(ws: &Workspace, command_id: &str) -> PathBuf {
 fn record_command(project: &Path, command_id: &str, payload: &Value) -> Result<()> {
     let root = find_root(project)?;
     let path = root.join(COMMANDS_DIR).join(format!("{command_id}.json"));
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    fs::write(path, serde_json::to_vec_pretty(payload)?)?;
+    atomic_write(&path, &serde_json::to_vec_pretty(payload)?)?;
     Ok(())
 }
 
 fn print_ok(tool: &str, project: &Path, data: Value) -> Result<()> {
-    let command_id = format!("{}-{}", Utc::now().timestamp_millis(), tool);
+    let command_id = command_id(tool);
     let payload = json!({
         "ok": true,
         "command_id": command_id,
@@ -1052,6 +1159,15 @@ fn print_ok(tool: &str, project: &Path, data: Value) -> Result<()> {
     record_command(project, payload["command_id"].as_str().unwrap(), &payload)?;
     println!("{}", serde_json::to_string_pretty(&payload).unwrap());
     Ok(())
+}
+
+fn command_id(tool: &str) -> String {
+    format!(
+        "{}-{}-{}",
+        Utc::now().timestamp_micros(),
+        std::process::id(),
+        tool
+    )
 }
 
 fn print_ok_unrecorded(tool: &str, project: &Path, data: Value) -> Result<()> {
@@ -1123,5 +1239,13 @@ mod tests {
 
         assert_eq!(target.relative_path, "src/main.rs");
         assert_eq!(target.name_path, "Foo/bar");
+    }
+
+    #[test]
+    fn command_id_includes_pid_and_tool() {
+        let id = command_id("find_symbol");
+
+        assert!(id.ends_with("-find_symbol"));
+        assert!(id.contains(&format!("-{}-", std::process::id())));
     }
 }

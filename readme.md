@@ -200,7 +200,7 @@ If Serena returns an error as text, the adapter treats it as a failed command in
 
 Use `explain-empty` after a successful command returns empty or unhelpful data. It reads the saved command JSON and prints likely causes.
 
-`cache clear` removes `.codex/tmp/serena-rs`, including state and command history. It does not stop a running Serena server; use `stop` first when the server should be stopped.
+`cache clear` removes state and command history, but keeps the lock file. It refuses to run while the recorded server is alive; use `stop` first.
 
 `server logs` lists recent Serena MCP log files from `~/.serena/logs`.
 
@@ -214,8 +214,37 @@ The adapter:
 - Writes state to `.codex/tmp/serena-rs/state.json`
 - Reuses a healthy server for repeated calls in the same project
 - Removes stale state when the server is no longer reachable
+- Uses a project lock at `.codex/tmp/serena-rs/lock`
+- Uses a global startup lock at `$HOME/.cache/serena-rs/startup.lock`
+- Writes state and command history atomically
 
 It does not register a Codex MCP server.
+
+## Concurrency
+
+Read-only semantic commands can run concurrently in the same project after the server is healthy:
+
+- `health`
+- `overview`
+- `symbol`
+- `declaration`
+- `refs`
+- `diagnostics`
+- `locate`
+
+Lifecycle and write commands take an exclusive project lock:
+
+- `start`
+- `stop`
+- `cache clear`
+- `rename --apply`
+- `replace-body --apply`
+- `insert-before --apply`
+- `insert-after --apply`
+
+When a project has no healthy server, the first read command upgrades through the exclusive lock and starts one server. Multi-project startup is serialized only while choosing a port and waiting for Serena to become healthy; queries remain project-local.
+
+`cache clear` refuses to remove state while the recorded server is alive. Run `serena-rs stop` first. It clears state and command history but keeps the lock file.
 
 ## Known Boundaries
 

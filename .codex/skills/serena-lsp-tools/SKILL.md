@@ -39,6 +39,13 @@ The adapter starts Serena with an explicit project path, `--context=codex`, and 
 
 Config lives at `.codex/serena-rs.toml`: `port`, `startup_timeout_ms`, and optional `serena_command`.
 
-`cache clear` removes `.codex/tmp/serena-rs`, including state and command history. Use `stop` first when the Serena server should be stopped.
+Concurrency model:
+
+- Read-only semantic commands share a project lock and may run concurrently after the server is healthy.
+- `start`, `stop`, `cache clear`, and write commands take an exclusive project lock.
+- First startup is serialized per project and across projects while selecting a port.
+- State and command history are written atomically.
+
+`cache clear` removes state and command history, but keeps the lock file. It only runs when the recorded server is not alive; use `stop` first.
 
 Do not use this skill for file reads, shell execution, text search, or memory operations. Those are intentionally outside the adapter surface.
