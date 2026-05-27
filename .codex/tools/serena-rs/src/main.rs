@@ -20,6 +20,7 @@ const DEFAULT_TIMEOUT_MS: u64 = 60_000;
 const PROTOCOL_VERSION: &str = "2025-06-18";
 const STATE_PATH: &str = ".codex/tmp/serena-rs/state.json";
 const CONFIG_PATH: &str = ".codex/serena-rs.toml";
+const COMMANDS_DIR: &str = ".codex/tmp/serena-rs/commands";
 
 #[derive(Parser)]
 #[command(
@@ -47,6 +48,16 @@ enum Cmd {
     ReplaceBody(EditSymbolArgs),
     InsertBefore(EditSymbolArgs),
     InsertAfter(EditSymbolArgs),
+    Locate(LocateArgs),
+    ExplainEmpty(ExplainEmptyArgs),
+    Cache {
+        #[command(subcommand)]
+        command: CacheCmd,
+    },
+    Server {
+        #[command(subcommand)]
+        command: ServerCmd,
+    },
 }
 
 #[derive(Args)]
@@ -92,6 +103,26 @@ struct EditSymbolArgs {
     stdin: bool,
     #[arg(long)]
     apply: bool,
+}
+
+#[derive(Args)]
+struct LocateArgs {
+    query: String,
+}
+
+#[derive(Args)]
+struct ExplainEmptyArgs {
+    command_id: String,
+}
+
+#[derive(Subcommand)]
+enum CacheCmd {
+    Clear,
+}
+
+#[derive(Subcommand)]
+enum ServerCmd {
+    Logs,
 }
 
 #[derive(Debug, Deserialize)]
@@ -156,7 +187,7 @@ fn run() -> Result<()> {
                 "start",
                 &ws.root,
                 json!({ "pid": state.pid, "port": state.port }),
-            );
+            )?;
             Ok(())
         }
         Cmd::Stop => stop(&ws),
@@ -169,7 +200,7 @@ fn run() -> Result<()> {
                 "health",
                 &ws.root,
                 json!({ "port": state.port, "tools": tools.len() }),
-            );
+            )?;
             Ok(())
         }
         Cmd::Overview(args) => call_tool(
@@ -202,7 +233,8 @@ fn run() -> Result<()> {
         Cmd::Rename(args) => {
             require_apply(args.apply)?;
             let target = parse_symbol_path(&ws.root, &args.symbol_path)?;
-            call_tool(
+            let changed_file = target.relative_path.clone();
+            let data = call_tool_data(
                 &ws,
                 "rename_symbol",
                 json!({
@@ -210,11 +242,24 @@ fn run() -> Result<()> {
                     "name_path": target.name_path,
                     "new_name": args.new_name
                 }),
+            )?;
+            print_ok(
+                "rename_symbol",
+                &ws.root,
+                json!({ "changed_files": [changed_file], "result": data }),
             )
         }
         Cmd::ReplaceBody(args) => edit_symbol(&ws, "replace_symbol_body", args),
         Cmd::InsertBefore(args) => edit_symbol(&ws, "insert_before_symbol", args),
         Cmd::InsertAfter(args) => edit_symbol(&ws, "insert_after_symbol", args),
+        Cmd::Locate(args) => locate(&ws, args),
+        Cmd::ExplainEmpty(args) => explain_empty(&ws, args),
+        Cmd::Cache { command } => match command {
+            CacheCmd::Clear => cache_clear(&ws),
+        },
+        Cmd::Server { command } => match command {
+            ServerCmd::Logs => server_logs(&ws),
+        },
     }
 }
 
@@ -366,14 +411,12 @@ fn status(ws: &Workspace) -> Result<()> {
         }
         None => json!({ "running": false, "state": ws.state_path() }),
     };
-    print_ok("status", &ws.root, data);
-    Ok(())
+    print_ok("status", &ws.root, data)
 }
 
 fn stop(ws: &Workspace) -> Result<()> {
     let Some(state) = read_state(ws)? else {
-        print_ok("stop", &ws.root, json!({ "stopped": false }));
-        return Ok(());
+        return print_ok("stop", &ws.root, json!({ "stopped": false }));
     };
     if process_alive(state.pid) {
         let _ = Command::new("kill").arg(state.pid.to_string()).status();
@@ -383,8 +426,7 @@ fn stop(ws: &Workspace) -> Result<()> {
         "stop",
         &ws.root,
         json!({ "stopped": true, "pid": state.pid }),
-    );
-    Ok(())
+    )
 }
 
 fn refs(ws: &Workspace, args: RefsArgs) -> Result<()> {
@@ -422,8 +464,7 @@ fn refs(ws: &Workspace, args: RefsArgs) -> Result<()> {
     if args.include_declaration {
         data.insert("declaration".into(), declaration);
     }
-    print_ok("find_referencing_symbols", &ws.root, Value::Object(data));
-    Ok(())
+    print_ok("find_referencing_symbols", &ws.root, Value::Object(data))
 }
 
 fn declaration(ws: &Workspace, loc: Location) -> Result<()> {
@@ -436,8 +477,7 @@ fn declaration(ws: &Workspace, loc: Location) -> Result<()> {
         json!({ "relative_path": loc.relative_path, "regex": query.regex }),
     )?;
     if serena_text_error(&declaration).is_none() {
-        print_ok("find_declaration", &ws.root, declaration);
-        return Ok(());
+        return print_ok("find_declaration", &ws.root, declaration);
     }
     let symbol = mcp.call_tool(
         "find_symbol",
@@ -447,8 +487,7 @@ fn declaration(ws: &Workspace, loc: Location) -> Result<()> {
             "max_matches": 1
         }),
     )?;
-    print_ok("find_declaration", &ws.root, symbol);
-    Ok(())
+    print_ok("find_declaration", &ws.root, symbol)
 }
 
 fn call_tool(ws: &Workspace, tool: &str, args: Value) -> Result<()> {
@@ -456,8 +495,7 @@ fn call_tool(ws: &Workspace, tool: &str, args: Value) -> Result<()> {
     let mut mcp = McpClient::connect(state.port)?;
     mcp.initialize()?;
     let data = mcp.call_tool(tool, args)?;
-    print_ok(tool, &ws.root, data);
-    Ok(())
+    print_ok(tool, &ws.root, data)
 }
 
 fn edit_symbol(ws: &Workspace, tool: &str, args: EditSymbolArgs) -> Result<()> {
@@ -468,7 +506,8 @@ fn edit_symbol(ws: &Workspace, tool: &str, args: EditSymbolArgs) -> Result<()> {
     let target = parse_symbol_path(&ws.root, &args.symbol_path)?;
     let mut body = String::new();
     std::io::stdin().read_to_string(&mut body)?;
-    call_tool(
+    let changed_file = target.relative_path.clone();
+    let data = call_tool_data(
         ws,
         tool,
         json!({
@@ -476,6 +515,11 @@ fn edit_symbol(ws: &Workspace, tool: &str, args: EditSymbolArgs) -> Result<()> {
             "name_path": target.name_path,
             "body": body
         }),
+    )?;
+    print_ok(
+        tool,
+        &ws.root,
+        json!({ "changed_files": [changed_file], "result": data }),
     )
 }
 
@@ -484,6 +528,75 @@ fn require_apply(apply: bool) -> Result<()> {
         return Ok(());
     }
     bail!("write command requires --apply; dry-run is not available for this Serena tool")
+}
+
+fn call_tool_data(ws: &Workspace, tool: &str, args: Value) -> Result<Value> {
+    let state = ensure_server(ws)?;
+    let mut mcp = McpClient::connect(state.port)?;
+    mcp.initialize()?;
+    mcp.call_tool(tool, args)
+}
+
+fn locate(ws: &Workspace, args: LocateArgs) -> Result<()> {
+    let (file, name) = args
+        .query
+        .split_once('@')
+        .map(|(file, name)| (Some(file), name))
+        .unwrap_or((None, args.query.as_str()));
+    let mut params = Map::new();
+    params.insert("name_path_pattern".into(), json!(name));
+    params.insert("max_matches".into(), json!(20));
+    if let Some(file) = file {
+        params.insert(
+            "relative_path".into(),
+            json!(normalize_relative(&ws.root, file)?),
+        );
+    }
+    let data = call_tool_data(ws, "find_symbol", Value::Object(params))?;
+    print_ok("locate", &ws.root, data)
+}
+
+fn explain_empty(ws: &Workspace, args: ExplainEmptyArgs) -> Result<()> {
+    if args.command_id.contains('/') || args.command_id.contains('\\') {
+        bail!("invalid command id");
+    }
+    let path = command_path(ws, &args.command_id);
+    if !path.exists() {
+        bail!("unknown command id `{}`", args.command_id);
+    }
+    let command: Value = serde_json::from_slice(&fs::read(path)?)?;
+    print_ok(
+        "explain_empty",
+        &ws.root,
+        json!({
+            "command": command,
+            "explanations": [
+                "The target symbol may not be indexed by the active Serena language backend.",
+                "The query may be too broad, too narrow, or scoped to the wrong file.",
+                "For refs, the resolved symbol may have no project-local references."
+            ]
+        }),
+    )
+}
+
+fn cache_clear(ws: &Workspace) -> Result<()> {
+    let tmp = ws.root.join(".codex/tmp/serena-rs");
+    let removed = tmp.exists();
+    if removed {
+        fs::remove_dir_all(&tmp)?;
+    }
+    print_ok_unrecorded("cache_clear", &ws.root, json!({ "removed": removed }))
+}
+
+fn server_logs(ws: &Workspace) -> Result<()> {
+    let home = env::var("HOME").unwrap_or_default();
+    let log_root = Path::new(&home).join(".serena/logs");
+    let mut logs = Vec::new();
+    collect_logs(&log_root, &mut logs)?;
+    logs.sort();
+    logs.reverse();
+    logs.truncate(20);
+    print_ok("server_logs", &ws.root, json!({ "logs": logs }))
 }
 
 fn ensure_server(ws: &Workspace) -> Result<State> {
@@ -891,18 +1004,68 @@ fn serena_text_error(result: &Value) -> Option<String> {
         .map(ToOwned::to_owned)
 }
 
-fn print_ok(tool: &str, project: &Path, data: Value) {
-    println!(
-        "{}",
-        serde_json::to_string_pretty(&json!({
-            "ok": true,
-            "tool": tool,
-            "project": project,
-            "data": data,
-            "warnings": []
-        }))
-        .unwrap()
-    );
+fn collect_logs(dir: &Path, logs: &mut Vec<String>) -> Result<()> {
+    if !dir.exists() {
+        return Ok(());
+    }
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.is_dir() {
+            collect_logs(&path, logs)?;
+        } else if path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("")
+            .starts_with("mcp_")
+        {
+            logs.push(path.to_string_lossy().to_string());
+        }
+    }
+    Ok(())
+}
+
+fn command_path(ws: &Workspace, command_id: &str) -> PathBuf {
+    ws.root
+        .join(COMMANDS_DIR)
+        .join(format!("{command_id}.json"))
+}
+
+fn record_command(project: &Path, command_id: &str, payload: &Value) -> Result<()> {
+    let root = find_root(project)?;
+    let path = root.join(COMMANDS_DIR).join(format!("{command_id}.json"));
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(path, serde_json::to_vec_pretty(payload)?)?;
+    Ok(())
+}
+
+fn print_ok(tool: &str, project: &Path, data: Value) -> Result<()> {
+    let command_id = format!("{}-{}", Utc::now().timestamp_millis(), tool);
+    let payload = json!({
+        "ok": true,
+        "command_id": command_id,
+        "tool": tool,
+        "project": project,
+        "data": data,
+        "warnings": []
+    });
+    record_command(project, payload["command_id"].as_str().unwrap(), &payload)?;
+    println!("{}", serde_json::to_string_pretty(&payload).unwrap());
+    Ok(())
+}
+
+fn print_ok_unrecorded(tool: &str, project: &Path, data: Value) -> Result<()> {
+    let payload = json!({
+        "ok": true,
+        "tool": tool,
+        "project": project,
+        "data": data,
+        "warnings": []
+    });
+    println!("{}", serde_json::to_string_pretty(&payload)?);
+    Ok(())
 }
 
 fn print_error(kind: &str, message: &str, hint: Option<&str>) {
