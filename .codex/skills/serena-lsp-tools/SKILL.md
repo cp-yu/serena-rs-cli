@@ -35,7 +35,7 @@ Location commands use 1-based `line` and `col`. If `col` is omitted, the adapter
 
 Runtime errors return JSON on stderr and a non-zero exit code. Argument parsing errors may be clap's normal text output.
 
-The adapter starts Serena with an explicit project path, `--context=codex`, and streamable HTTP on localhost. It writes agent-agnostic runtime state to `.serena-rs/state.json` and returns stable JSON for runtime success and failure. Successful command output includes `command_id` for `explain-empty`.
+The adapter starts Serena with an explicit project path, `--context=codex`, and streamable HTTP on localhost. It writes agent-agnostic runtime state to `.serena/serena-rs/state.json` and returns stable JSON for runtime success and failure. Successful command output includes `command_id` for `explain-empty`.
 
 Config lives at `.codex/serena-rs.toml`: `port`, `startup_timeout_ms`, and optional `serena_command`.
 

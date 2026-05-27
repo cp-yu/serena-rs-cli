@@ -19,10 +19,10 @@ use std::time::{Duration, Instant};
 const DEFAULT_PORT: u16 = 9121;
 const DEFAULT_TIMEOUT_MS: u64 = 60_000;
 const PROTOCOL_VERSION: &str = "2025-06-18";
-const STATE_PATH: &str = ".serena-rs/state.json";
+const STATE_PATH: &str = ".serena/serena-rs/state.json";
 const CONFIG_PATH: &str = ".codex/serena-rs.toml";
-const COMMANDS_DIR: &str = ".serena-rs/commands";
-const LOCK_PATH: &str = ".serena-rs/lock";
+const COMMANDS_DIR: &str = ".serena/serena-rs/commands";
+const LOCK_PATH: &str = ".serena/serena-rs/lock";
 const STARTUP_LOCK_PATH: &str = ".cache/serena-rs/startup.lock";
 
 #[derive(Parser)]

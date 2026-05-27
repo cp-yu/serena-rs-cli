@@ -3,14 +3,14 @@
  ## Summary
                                                                         
  把 serena-rs 从“能并发用但有竞态”加固到“同项目多 agent 可并发读、多项
- 目可并发启动、写入和生命周期操作互斥”。运行态必须放在项目根 .serena-rs，
+ 目可并发启动、写入和生命周期操作互斥”。运行态必须放在项目根 .serena/serena-rs，
  不能绑定 Codex 专用目录。不新增 CLI 命令；核心变化是项目级读写锁、全局启
  动锁、原子状态写入和更稳的 command history。
                                                                         
  ## Key Changes
                                                                         
  - 新增 fs2 依赖，用文件锁实现并发控制：
-     - 项目锁：.serena-rs/lock
+     - 项目锁：.serena/serena-rs/lock
      - 全局启动锁：$HOME/.cache/serena-rs/startup.lock
  - 同项目并发策略：
      - overview、symbol、declaration、refs、diagnostics、locate、health
