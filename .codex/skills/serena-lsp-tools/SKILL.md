@@ -17,6 +17,13 @@ Read-only commands:
 - `refs <file:line[:col]> [--include-declaration]`
 - `diagnostics <file>`
 
+Write commands require explicit `--apply`; no dry-run is fabricated:
+
+- `rename <file>@<symbol-path> <new-name> --apply`
+- `replace-body <file>@<symbol-path> --stdin --apply`
+- `insert-before <file>@<symbol-path> --stdin --apply`
+- `insert-after <file>@<symbol-path> --stdin --apply`
+
 The adapter starts Serena with `--project-from-cwd`, `--context=codex`, and streamable HTTP on localhost. It writes state to `.codex/tmp/serena-rs/state.json` and returns stable JSON for success and failure.
 
-Do not use this skill for file reads, shell execution, text search, or edits. Those are intentionally outside the adapter's first-stage surface.
+Do not use this skill for file reads, shell execution, text search, or memory operations. Those are intentionally outside the adapter surface.

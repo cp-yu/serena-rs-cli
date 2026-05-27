@@ -43,6 +43,10 @@ enum Cmd {
     Declaration(LocationArgs),
     Refs(RefsArgs),
     Diagnostics(FileArgs),
+    Rename(RenameArgs),
+    ReplaceBody(EditSymbolArgs),
+    InsertBefore(EditSymbolArgs),
+    InsertAfter(EditSymbolArgs),
 }
 
 #[derive(Args)]
@@ -71,6 +75,23 @@ struct RefsArgs {
     location: String,
     #[arg(long)]
     include_declaration: bool,
+}
+
+#[derive(Args)]
+struct RenameArgs {
+    symbol_path: String,
+    new_name: String,
+    #[arg(long)]
+    apply: bool,
+}
+
+#[derive(Args)]
+struct EditSymbolArgs {
+    symbol_path: String,
+    #[arg(long)]
+    stdin: bool,
+    #[arg(long)]
+    apply: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -108,6 +129,11 @@ struct Location {
     relative_path: String,
     line: usize,
     col: Option<usize>,
+}
+
+struct SymbolPath {
+    relative_path: String,
+    name_path: String,
 }
 
 fn main() {
@@ -173,6 +199,22 @@ fn run() -> Result<()> {
             "get_diagnostics_for_file",
             json!({ "relative_path": normalize_relative(&ws.root, &args.file)? }),
         ),
+        Cmd::Rename(args) => {
+            require_apply(args.apply)?;
+            let target = parse_symbol_path(&ws.root, &args.symbol_path)?;
+            call_tool(
+                &ws,
+                "rename_symbol",
+                json!({
+                    "relative_path": target.relative_path,
+                    "name_path": target.name_path,
+                    "new_name": args.new_name
+                }),
+            )
+        }
+        Cmd::ReplaceBody(args) => edit_symbol(&ws, "replace_symbol_body", args),
+        Cmd::InsertBefore(args) => edit_symbol(&ws, "insert_before_symbol", args),
+        Cmd::InsertAfter(args) => edit_symbol(&ws, "insert_after_symbol", args),
     }
 }
 
@@ -416,6 +458,32 @@ fn call_tool(ws: &Workspace, tool: &str, args: Value) -> Result<()> {
     let data = mcp.call_tool(tool, args)?;
     print_ok(tool, &ws.root, data);
     Ok(())
+}
+
+fn edit_symbol(ws: &Workspace, tool: &str, args: EditSymbolArgs) -> Result<()> {
+    require_apply(args.apply)?;
+    if !args.stdin {
+        bail!("write command requires --stdin");
+    }
+    let target = parse_symbol_path(&ws.root, &args.symbol_path)?;
+    let mut body = String::new();
+    std::io::stdin().read_to_string(&mut body)?;
+    call_tool(
+        ws,
+        tool,
+        json!({
+            "relative_path": target.relative_path,
+            "name_path": target.name_path,
+            "body": body
+        }),
+    )
+}
+
+fn require_apply(apply: bool) -> Result<()> {
+    if apply {
+        return Ok(());
+    }
+    bail!("write command requires --apply; dry-run is not available for this Serena tool")
 }
 
 fn ensure_server(ws: &Workspace) -> Result<State> {
@@ -691,6 +759,19 @@ fn parse_location(root: &Path, raw: &str) -> Result<Location> {
     })
 }
 
+fn parse_symbol_path(root: &Path, raw: &str) -> Result<SymbolPath> {
+    let (file, name_path) = raw
+        .split_once('@')
+        .ok_or_else(|| anyhow!("symbol path must be <file>@<name_path>"))?;
+    if name_path.is_empty() {
+        bail!("symbol name path must not be empty");
+    }
+    Ok(SymbolPath {
+        relative_path: normalize_relative(root, file)?,
+        name_path: name_path.to_owned(),
+    })
+}
+
 struct IdentifierQuery {
     regex: String,
     name: String,
@@ -872,5 +953,14 @@ mod tests {
         let span = identifier_span("let user_service = 1;", Some(7)).unwrap();
 
         assert_eq!(span, (4, 16));
+    }
+
+    #[test]
+    fn parses_symbol_path() {
+        let root = Path::new("/tmp/project");
+        let target = parse_symbol_path(root, "/tmp/project/src/main.rs@Foo/bar").unwrap();
+
+        assert_eq!(target.relative_path, "src/main.rs");
+        assert_eq!(target.name_path, "Foo/bar");
     }
 }
