@@ -11,6 +11,8 @@ use std::env;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::net::TcpListener;
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::thread;
@@ -21,6 +23,7 @@ const DEFAULT_TIMEOUT_MS: u64 = 60_000;
 const PROTOCOL_VERSION: &str = "2025-06-18";
 const STATE_PATH: &str = ".serena/serena-rs/state.json";
 const CONFIG_PATH: &str = ".codex/serena-rs.toml";
+const CONTEXT_PATH: &str = ".codex/serena-rs-context.yml";
 const COMMANDS_DIR: &str = ".serena/serena-rs/commands";
 const LOCK_PATH: &str = ".serena/serena-rs/lock";
 const STARTUP_LOCK_PATH: &str = ".cache/serena-rs/startup.lock";
@@ -46,7 +49,7 @@ enum Cmd {
     Symbol(SymbolArgs),
     Declaration(LocationArgs),
     Refs(RefsArgs),
-    Diagnostics(FileArgs),
+    Diagnostics(DiagnosticsArgs),
     Rename(RenameArgs),
     ReplaceBody(EditSymbolArgs),
     InsertBefore(EditSymbolArgs),
@@ -77,6 +80,11 @@ struct SymbolArgs {
     file: Option<String>,
     #[arg(long, default_value_t = 0)]
     depth: u32,
+}
+
+#[derive(Args)]
+struct DiagnosticsArgs {
+    file: String,
 }
 
 #[derive(Args)]
@@ -419,6 +427,7 @@ impl McpClient {
 }
 
 fn status(ws: &Workspace) -> Result<()> {
+    let _lock = project_lock(ws, LockMode::Shared)?;
     let state = read_state(ws)?;
     let data = match state {
         Some(state) => {
@@ -442,8 +451,8 @@ fn stop(ws: &Workspace) -> Result<()> {
     let Some(state) = read_state(ws)? else {
         return print_ok("stop", &ws.root, json!({ "stopped": false }));
     };
-    if process_alive(state.pid) {
-        let _ = Command::new("kill").arg(state.pid.to_string()).status();
+    if process_alive(state.pid) || mcp_ready(state.port) {
+        terminate_server(state.pid);
     }
     let _ = fs::remove_file(ws.state_path());
     print_ok(
@@ -666,10 +675,6 @@ fn ensure_server_unlocked(ws: &Workspace) -> Result<State> {
         return Ok(state);
     }
 
-    if read_state(ws)?.is_some() {
-        let _ = fs::remove_file(ws.state_path());
-    }
-
     let port = choose_port(ws)?;
     let (mut child, command_text) = start_serena(ws, port)?;
     let deadline = Instant::now() + Duration::from_millis(timeout_ms(ws));
@@ -693,7 +698,7 @@ fn ensure_server_unlocked(ws: &Workspace) -> Result<State> {
         }
         thread::sleep(Duration::from_millis(500));
     }
-    let _ = child.kill();
+    terminate_server(child.id());
     bail!("Serena did not become healthy within {} ms", timeout_ms(ws));
 }
 
@@ -703,7 +708,8 @@ fn start_serena(ws: &Workspace, port: u16) -> Result<(Child, String)> {
         "start-mcp-server",
         "--project",
         &ws.root.to_string_lossy(),
-        "--context=codex",
+        "--context",
+        &ws.root.join(CONTEXT_PATH).to_string_lossy(),
         "--transport",
         "streamable-http",
         "--host",
@@ -716,9 +722,40 @@ fn start_serena(ws: &Workspace, port: u16) -> Result<(Child, String)> {
     command.stdin(Stdio::null());
     command.stdout(Stdio::null());
     command.stderr(Stdio::null());
+    detach_command(&mut command);
     let command_text = format!("{command:?}");
     let child = command.spawn().context("failed to start Serena")?;
     Ok((child, command_text))
+}
+
+#[cfg(unix)]
+fn detach_command(command: &mut Command) {
+    unsafe {
+        command.pre_exec(|| {
+            if setsid() == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+}
+
+#[cfg(not(unix))]
+fn detach_command(_command: &mut Command) {}
+
+#[cfg(unix)]
+extern "C" {
+    fn setsid() -> i32;
+}
+
+fn terminate_server(pid: u32) {
+    #[cfg(unix)]
+    {
+        let _ = Command::new("kill")
+            .args(["-TERM", &format!("-{pid}")])
+            .status();
+    }
+    let _ = Command::new("kill").arg(pid.to_string()).status();
 }
 
 fn serena_command(ws: &Workspace) -> Command {
@@ -873,8 +910,20 @@ fn process_alive(pid: u32) -> bool {
 }
 
 fn mcp_ready(port: u16) -> bool {
+    for attempt in 0..5 {
+        if mcp_ready_once(port) {
+            return true;
+        }
+        if attempt < 4 {
+            thread::sleep(Duration::from_millis(200));
+        }
+    }
+    false
+}
+
+fn mcp_ready_once(port: u16) -> bool {
     Client::builder()
-        .timeout(Duration::from_millis(500))
+        .timeout(Duration::from_secs(1))
         .build()
         .and_then(|client| {
             client
@@ -1109,6 +1158,9 @@ fn symbol_target(result: &Value) -> Result<(String, String)> {
 }
 
 fn empty_reference_result(result: &Value) -> bool {
+    if result.as_object().is_some_and(Map::is_empty) {
+        return true;
+    }
     let text = result
         .get("structuredContent")
         .and_then(|v| v.get("result"))
@@ -1288,12 +1340,17 @@ mod tests {
     }
 
     #[test]
-    fn detects_empty_reference_result() {
+    fn detects_wrapped_empty_reference_result() {
         let result = json!({
             "content": [{ "text": "{}", "type": "text" }],
             "structuredContent": { "result": "{}" }
         });
 
         assert!(empty_reference_result(&result));
+    }
+
+    #[test]
+    fn detects_raw_empty_reference_result() {
+        assert!(empty_reference_result(&json!({})));
     }
 }

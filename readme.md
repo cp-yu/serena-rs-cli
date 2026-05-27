@@ -27,6 +27,7 @@ Those operations duplicate normal agent capabilities and have a larger risk surf
 ```text
 .codex/
   serena-rs.toml
+  serena-rs-context.yml
   skills/
     serena-lsp-tools/
       SKILL.md
@@ -213,10 +214,12 @@ Use `explain-empty` after a successful command returns empty or unhelpful data. 
 The adapter:
 
 - Finds the project root from `.git` or `.serena/project.yml`
-- Starts Serena with an explicit project path and `--context=codex`
+- Starts Serena with an explicit project path and `.codex/serena-rs-context.yml`
 - Uses streamable HTTP on `127.0.0.1`
 - Writes state to `.serena/serena-rs/state.json`
+- Records the Serena launcher process group id as `pid`
 - Reuses a healthy server for repeated calls in the same project
+- Stops the recorded Serena process group, including the Python MCP child
 - Removes stale state when the server is no longer reachable
 - Uses a project lock at `.serena/serena-rs/lock`
 - Uses a global startup lock at `$HOME/.cache/serena-rs/startup.lock`
