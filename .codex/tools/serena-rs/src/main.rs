@@ -685,9 +685,12 @@ fn refs(ws: &Workspace, args: RefsArgs) -> Result<()> {
         json!({ "relative_path": relative_path, "name_path": name_path }),
     )?;
     drop(lock);
-    let mut warnings =
-        semantic_result_warnings(ws, Some(&loc.relative_path), Some(&query.name), &references)?;
+    let mut warnings = semantic_result_warnings(ws, Some(&loc.relative_path), None, &references)?;
+    if let Some(adjusted) = &query.adjusted {
+        warnings.push(adjusted.clone());
+    }
     if serena_result_empty(&references) {
+        warnings.retain(|warning| !warning.contains("empty semantic result"));
         warnings.push(format!(
             "Serena returned no references for `{name_path}`; verify with `rg {}` before assuming it is unused.",
             query.name
@@ -706,9 +709,12 @@ fn refs(ws: &Workspace, args: RefsArgs) -> Result<()> {
         warnings,
         Some(json!({
             "relative_path": loc.relative_path,
-            "line": loc.line,
-            "col": loc.col,
+            "requested_line": loc.line,
+            "requested_col": loc.col,
+            "line": query.line,
+            "col": query.col,
             "identifier": query.name,
+            "adjusted": query.adjusted,
             "name_path": name_path
         })),
     )
@@ -734,6 +740,10 @@ fn declaration(ws: &Workspace, loc: Location) -> Result<()> {
         Some(&query.name),
         &declaration,
     )?;
+    let mut warnings = warnings;
+    if let Some(adjusted) = &query.adjusted {
+        warnings.push(adjusted.clone());
+    }
     print_ok_with_context(
         "find_declaration",
         &ws.root,
@@ -741,9 +751,12 @@ fn declaration(ws: &Workspace, loc: Location) -> Result<()> {
         warnings,
         Some(json!({
             "relative_path": loc.relative_path,
-            "line": loc.line,
-            "col": loc.col,
-            "identifier": query.name
+            "requested_line": loc.line,
+            "requested_col": loc.col,
+            "line": query.line,
+            "col": query.col,
+            "identifier": query.name,
+            "adjusted": query.adjusted
         })),
     )
 }
@@ -1365,6 +1378,9 @@ fn parse_symbol_path(root: &Path, raw: &str) -> Result<SymbolPath> {
 struct IdentifierQuery {
     regex: String,
     name: String,
+    line: usize,
+    col: usize,
+    adjusted: Option<String>,
 }
 
 fn identifier_query_at(
@@ -1373,21 +1389,99 @@ fn identifier_query_at(
     one_based_col: Option<usize>,
 ) -> Result<IdentifierQuery> {
     let text = fs::read_to_string(path)?;
-    let line = text
-        .lines()
-        .nth(one_based_line - 1)
+    let lines = text.lines().collect::<Vec<_>>();
+    let line = lines
+        .get(one_based_line - 1)
         .ok_or_else(|| anyhow!("line {one_based_line} is outside {}", path.display()))?;
-    let (start, end) = identifier_span(line, one_based_col)?;
+    let requested_line_has_identifier = one_based_col.is_some() || !line_looks_like_comment(line);
+    let requested_span = requested_line_has_identifier
+        .then(|| identifier_span(line, one_based_col))
+        .transpose();
+    let (line_index, start, end, adjusted) = match requested_span {
+        Ok(Some((start, end))) => (one_based_line - 1, start, end, None),
+        Err(err) if one_based_col.is_some() => return Err(err),
+        Err(err) => nearest_identifier_span(&lines, one_based_line - 1)
+            .map(|(line_index, start, end)| {
+                (
+                    line_index,
+                    start,
+                    end,
+                    Some(format!(
+                        "requested line {} had no identifier; using nearest identifier on line {}",
+                        one_based_line,
+                        line_index + 1
+                    )),
+                )
+            })
+            .ok_or(err)?,
+        Ok(None) => nearest_identifier_span(&lines, one_based_line - 1)
+            .map(|(line_index, start, end)| {
+                (
+                    line_index,
+                    start,
+                    end,
+                    Some(format!(
+                        "requested line {} had no identifier; using nearest identifier on line {}",
+                        one_based_line,
+                        line_index + 1
+                    )),
+                )
+            })
+            .ok_or_else(|| anyhow!("no identifier found near requested location"))?,
+    };
+    let line = lines[line_index];
     let before = regex_escape(&line[..start]);
     let ident = regex_escape(&line[start..end]);
     let after = regex_escape(&line[end..]);
     Ok(IdentifierQuery {
         regex: format!("{before}({ident}){after}"),
         name: line[start..end].to_owned(),
+        line: line_index + 1,
+        col: start + 1,
+        adjusted,
     })
 }
 
+fn nearest_identifier_span(
+    lines: &[&str],
+    zero_based_line: usize,
+) -> Option<(usize, usize, usize)> {
+    const WINDOW: usize = 3;
+    (0..=WINDOW).find_map(|offset| {
+        let forward = zero_based_line + offset;
+        if forward < lines.len() {
+            if !line_looks_like_comment(lines[forward]) {
+                if let Ok((start, end)) = identifier_span(lines[forward], None) {
+                    return Some((forward, start, end));
+                }
+            }
+        }
+        if offset > 0 && zero_based_line >= offset {
+            let backward = zero_based_line - offset;
+            if !line_looks_like_comment(lines[backward]) {
+                if let Ok((start, end)) = identifier_span(lines[backward], None) {
+                    return Some((backward, start, end));
+                }
+            }
+        }
+        None
+    })
+}
+
+fn line_looks_like_comment(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    trimmed.is_empty()
+        || trimmed.starts_with("//")
+        || trimmed.starts_with("/*")
+        || trimmed.starts_with('*')
+}
+
 fn identifier_span(line: &str, one_based_col: Option<usize>) -> Result<(usize, usize)> {
+    if one_based_col.is_none() {
+        if let Some(span) = function_name_span(line) {
+            return Ok(span);
+        }
+    }
     let bytes = line.as_bytes();
     let mut idx = one_based_col.unwrap_or_else(|| {
         bytes
@@ -1415,6 +1509,28 @@ fn identifier_span(line: &str, one_based_col: Option<usize>) -> Result<(usize, u
         end += 1;
     }
     Ok((start, end))
+}
+
+fn function_name_span(line: &str) -> Option<(usize, usize)> {
+    let bytes = line.as_bytes();
+    let paren = bytes.iter().position(|byte| *byte == b'(')?;
+    let mut end = paren;
+    while end > 0 && bytes[end - 1].is_ascii_whitespace() {
+        end -= 1;
+    }
+    let mut start = end;
+    while start > 0 && is_ident(bytes[start - 1]) {
+        start -= 1;
+    }
+    if start == end {
+        return None;
+    }
+    let name = &line[start..end];
+    let control_keywords = ["if", "for", "while", "switch", "return", "sizeof"];
+    if control_keywords.contains(&name) {
+        return None;
+    }
+    Some((start, end))
 }
 
 fn is_ident(byte: u8) -> bool {
@@ -1808,6 +1924,29 @@ mod tests {
         let span = identifier_span("let user_service = 1;", Some(7)).unwrap();
 
         assert_eq!(span, (4, 16));
+    }
+
+    #[test]
+    fn falls_forward_to_nearest_identifier_line() {
+        let dir = env::temp_dir().join(format!("serena-rs-test-{}", Utc::now().timestamp_micros()));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("main.c");
+        fs::write(&path, "/* comment */\nint main(void)\n{\n}\n").unwrap();
+
+        let query = identifier_query_at(&path, 1, None).unwrap();
+
+        assert_eq!(query.name, "main");
+        assert_eq!(query.line, 2);
+        assert_eq!(query.col, 5);
+        assert!(query.adjusted.unwrap().contains("using nearest identifier"));
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn prefers_function_name_over_return_type() {
+        let span = identifier_span("int main(void)", None).unwrap();
+
+        assert_eq!(span, (4, 8));
     }
 
     #[test]

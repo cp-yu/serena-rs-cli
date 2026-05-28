@@ -243,7 +243,7 @@ serena-rs refs src/main.rs:42
 serena-rs refs src/main.rs:42:7 --include-declaration
 ```
 
-Locations use 1-based `line` and `col`. If `col` is omitted, the adapter uses the first identifier on that line. Pass `:col` when a line contains multiple identifiers.
+Locations use 1-based `line` and `col`. If `col` is omitted, the adapter uses the first identifier on that line, preferring function names over return types on function definitions. If the requested line has no identifier, it searches nearby lines and reports the adjustment in `context` and `warnings`. Pass `:col` when a line contains multiple identifiers.
 
 If a semantic command returns an empty result, or diagnostics contain fatal C/C++ language-server errors such as missing includes, the command warns that the result is not trustworthy and should be checked with `rg`.
 

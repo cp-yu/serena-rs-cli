@@ -52,7 +52,7 @@ Write commands require explicit `--apply`; no dry-run is fabricated:
 
 ## Rules
 
-- Locations use 1-based `line` and `col`. If `col` is omitted, the first identifier on that line is used; pass `:col` when a line contains multiple identifiers.
+- Locations use 1-based `line` and `col`. If `col` is omitted, function names are preferred on function definitions; nearby-line adjustments are reported in `context` and `warnings`. Pass `:col` when a line contains multiple identifiers.
 - If a semantic command warns about an empty result or fatal diagnostics, verify with `rg <symbol>` before assuming the symbol is missing or unused.
 - Runtime success and failure are JSON. Successful output includes `command_id` for `explain-empty`; some outputs include `parsed_data` and `context`.
 - Read-only semantic commands may run concurrently after `health` succeeds.
