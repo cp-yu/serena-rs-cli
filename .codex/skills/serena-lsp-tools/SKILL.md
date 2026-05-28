@@ -1,21 +1,45 @@
 ---
 name: serena-lsp-tools
-description: Use the project-local Serena Rust adapter for semantic code navigation and explicit --apply symbol edits through Serena MCP.
+description: Navigate code semantically with LSP-backed symbol overview, symbol lookup, declaration/reference search, diagnostics, and guarded symbol edits.
 ---
 
-Use `.codex/tools/serena-rs.sh <command> ...` from the project root or a subdirectory. The wrapper prefers the release binary, then debug binary, then `cargo run`.
+Use this skill when code understanding or edits benefit from language-server semantics instead of plain text search. Prefer it for symbol discovery, definitions, references, diagnostics, and whole-symbol edits.
 
-Read-only commands:
+Run commands from the project root or a subdirectory:
 
-- `status`
-- `start`
-- `stop`
+```bash
+.codex/tools/serena-rs.sh <command> ...
+```
+
+## Workflow
+
+1. Check availability with `health` if the server state is unknown.
+2. Use `overview <file>` before reading a large source file.
+3. Use `symbol <name-or-path> [--file <file>]` to locate definitions by semantic symbol name.
+4. Use `declaration <file:line[:col]>` and `refs <file:line[:col]>` for LSP-style navigation.
+5. Use `diagnostics <file>` before and after risky edits.
+6. Use `explain-empty <command-id>` when a successful command returns empty or confusing data.
+
+## Commands
+
+Read-only:
+
 - `health`
+- `status`
 - `overview <file> [--depth N]`
 - `symbol <name-or-path> [--file <file>] [--depth N]`
 - `declaration <file:line[:col]>`
 - `refs <file:line[:col]> [--include-declaration]`
 - `diagnostics <file>`
+- `locate "<file>@<symbol-path>"`
+- `explain-empty <command-id>`
+
+Lifecycle:
+
+- `start`
+- `stop`
+- `cache clear`
+- `server logs`
 
 Write commands require explicit `--apply`; no dry-run is fabricated:
 
@@ -24,31 +48,13 @@ Write commands require explicit `--apply`; no dry-run is fabricated:
 - `insert-before <file>@<symbol-path> --stdin --apply`
 - `insert-after <file>@<symbol-path> --stdin --apply`
 
-Ergonomic commands:
+## Rules
 
-- `locate "<file>@<symbol-path>"`
-- `explain-empty <command-id>`
-- `cache clear`
-- `server logs`
+- Locations use 1-based `line` and `col`. If `col` is omitted, the first identifier on that line is used; pass `:col` when a line contains multiple identifiers.
+- If `refs` warns that Serena returned `{}`, verify with `rg <symbol>` before assuming the symbol is unused.
+- Runtime success and failure are JSON. Successful output includes `command_id` for `explain-empty`.
+- Read-only semantic commands may run concurrently after `health` succeeds.
+- `start`, `stop`, `cache clear`, and write commands are project-exclusive.
+- `cache clear` only runs when the recorded server is not alive; use `stop` first.
 
-Location commands use 1-based `line` and `col`. If `col` is omitted, the adapter uses the first identifier on that line; pass `:col` when a line contains multiple identifiers.
-
-If `refs` returns a warning about empty Serena references, verify with `rg <symbol>` before assuming the symbol is unused.
-
-Runtime errors return JSON on stderr and a non-zero exit code. Argument parsing errors may be clap's normal text output.
-
-The adapter starts Serena with an explicit project path, `.codex/serena-rs-context.yml`, and streamable HTTP on localhost. It writes agent-agnostic runtime state to `.serena/serena-rs/state.json` and returns stable JSON for runtime success and failure. Successful command output includes `command_id` for `explain-empty`.
-
-Config lives at `.codex/serena-rs.toml`: `port`, `startup_timeout_ms`, and optional `serena_command`.
-
-Concurrency model:
-
-- Read-only semantic commands share a project lock and may run concurrently after the server is healthy.
-- `start`, `stop`, `cache clear`, and write commands take an exclusive project lock.
-- First startup is serialized per project and across projects while selecting a port.
-- Runtime state records the Serena launcher process group id; `stop` terminates that group.
-- State and command history are written atomically.
-
-`cache clear` removes state and command history, but keeps the lock file. It only runs when the recorded server is not alive; use `stop` first.
-
-Do not use this skill for file reads, shell execution, text search, or memory operations. Those are intentionally outside the adapter surface.
+Do not use this skill for file reads, shell execution, text search, or memory operations. Use normal agent tools for those.
