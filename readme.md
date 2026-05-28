@@ -140,6 +140,8 @@ It also installs the skill for the selected CLI tools:
 3. Run a smoke test:
 
 ```bash
+serena-rs install-deps
+serena-rs doctor --file src/main.rs
 serena-rs health
 serena-rs health --file src/main.rs
 serena-rs overview src/main.rs
@@ -147,6 +149,8 @@ serena-rs diagnostics src/main.rs
 ```
 
 Replace `src/main.rs` with a real source file in the target project.
+
+`install-deps` pre-runs the selected Serena runner. If no `serena` command is configured or available, this uses the `uvx` fallback and warms the uv cache. `doctor --file <source>` checks the local runner, `rg`, project config, and the language server for that source file.
 
 `health` should return `ok: true` and `tools: 9`. That proves the underlying Serena MCP server is running with the restricted semantic-tool context. Use `health --file <source>` when you need to prove the language server for a specific source file is initialized.
 
@@ -221,6 +225,8 @@ Successful commands are recorded under `.serena/serena-rs/commands/` so `explain
 serena-rs status
 serena-rs start
 serena-rs stop
+serena-rs doctor
+serena-rs doctor --file src/main.rs
 serena-rs health
 serena-rs health --file src/main.rs
 ```
@@ -302,6 +308,7 @@ If Serena returns an error as text, the adapter treats it as a failed command in
 ## Agent Helpers
 
 ```bash
+serena-rs install-deps
 serena-rs explain-empty <command-id>
 serena-rs cache clear
 serena-rs server logs

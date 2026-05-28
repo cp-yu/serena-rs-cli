@@ -13,13 +13,14 @@ serena-rs <command> ...
 
 ## Workflow
 
-1. Check availability with `health --file <file>` when a target file is known; otherwise use `health`.
-2. Use `overview <file>` before reading a large source file.
-3. Use `symbol <name-or-path> [--file <file>]` to locate definitions by semantic symbol name.
-4. Use `declaration <file:line[:col]>` and `refs <file:line[:col]>` for LSP-style navigation.
-5. Use `diagnostics <file>` before and after risky edits.
-6. Treat empty semantic results or LSP environment warnings as untrusted; inspect `rg_cross_check` when present.
-7. Use `explain-empty <command-id>` when a successful command returns empty or confusing data.
+1. Use `doctor --file <file>` when first checking a project or dependency setup.
+2. Check availability with `health --file <file>` when a target file is known; otherwise use `health`.
+3. Use `overview <file>` before reading a large source file.
+4. Use `symbol <name-or-path> [--file <file>]` to locate definitions by semantic symbol name.
+5. Use `declaration <file:line[:col]>` and `refs <file:line[:col]>` for LSP-style navigation.
+6. Use `diagnostics <file>` before and after risky edits.
+7. Treat empty semantic results or LSP environment warnings as untrusted; inspect `rg_cross_check` when present.
+8. Use `explain-empty <command-id>` when a successful command returns empty or confusing data.
 
 ## Commands
 
@@ -27,6 +28,8 @@ Read-only:
 
 - `health`
 - `health --file <file>`
+- `doctor`
+- `doctor --file <file>`
 - `status`
 - `overview <file> [--depth N]`
 - `symbol <name-or-path> [--file <file>] [--depth N]`

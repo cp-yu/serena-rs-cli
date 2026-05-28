@@ -75,6 +75,8 @@ struct Cli {
 enum Cmd {
     Init(InitArgs),
     Status,
+    Doctor(DoctorArgs),
+    InstallDeps,
     Start,
     Stop,
     Health(HealthArgs),
@@ -108,6 +110,12 @@ struct FileArgs {
 
 #[derive(Args)]
 struct HealthArgs {
+    #[arg(long)]
+    file: Option<String>,
+}
+
+#[derive(Args)]
+struct DoctorArgs {
     #[arg(long)]
     file: Option<String>,
 }
@@ -253,6 +261,8 @@ fn run() -> Result<()> {
     match cli.command {
         Cmd::Init(args) => init(&ws, args),
         Cmd::Status => status(&ws),
+        Cmd::Doctor(args) => doctor(&ws, args),
+        Cmd::InstallDeps => install_deps(&ws),
         Cmd::Start => {
             let _lock = project_lock(&ws, LockMode::Exclusive)?;
             let state = ensure_server_unlocked(&ws)?;
@@ -479,6 +489,80 @@ fn status(ws: &Workspace) -> Result<()> {
     };
     drop(lock);
     print_ok_with_warnings("status", &ws.root, data, warnings)
+}
+
+fn doctor(ws: &Workspace, args: DoctorArgs) -> Result<()> {
+    let mut checks = Map::new();
+    checks.insert(
+        "project_config".into(),
+        json!({
+            "config": ws.root.join(CONFIG_PATH),
+            "context": ws.root.join(CONTEXT_PATH),
+            "config_exists": ws.root.join(CONFIG_PATH).exists(),
+            "context_exists": ws.root.join(CONTEXT_PATH).exists(),
+            "legacy_config": ws.root.join(LEGACY_CONFIG_PATH).exists()
+        }),
+    );
+    checks.insert(
+        "runner".into(),
+        json!({
+            "configured": ws.config.serena_command,
+            "serena_on_path": command_exists("serena"),
+            "uvx_on_path": command_exists("uvx"),
+            "selected": serena_runner_label(ws)
+        }),
+    );
+    checks.insert("rg".into(), json!({ "available": command_exists("rg") }));
+
+    let mut data = Map::new();
+    data.insert("checks".into(), Value::Object(checks));
+    if let Some(file) = args.file {
+        let relative_path = normalize_relative(&ws.root, &file)?;
+        let (_lock, state) = read_server(ws)?;
+        let mut mcp = McpClient::connect(state.port)?;
+        mcp.initialize()?;
+        data.insert(
+            "file_probe".into(),
+            health_probe(&mut mcp, &relative_path)
+                .with_context(|| format!("doctor file probe failed for `{relative_path}`"))?,
+        );
+    }
+
+    let mut warnings = Vec::new();
+    if ws.config.serena_command.is_none() && !command_exists("serena") && !command_exists("uvx") {
+        warnings.push("neither `serena` nor `uvx` was found; install uv or set `serena_command` in .serena/serena-rs/config.toml".to_owned());
+    }
+    if !ws.root.join(CONTEXT_PATH).exists() {
+        warnings.push("serena-rs context is missing; run `serena-rs init`".to_owned());
+    }
+    if !command_exists("rg") {
+        warnings.push("rg is missing; empty refs cannot be cross-checked automatically".to_owned());
+    }
+    print_ok_with_warnings("doctor", &ws.root, Value::Object(data), warnings)
+}
+
+fn install_deps(ws: &Workspace) -> Result<()> {
+    let mut command = serena_command(ws);
+    command.arg("--help");
+    command.current_dir(&ws.root);
+    command.stdin(Stdio::null());
+    command.stdout(Stdio::piped());
+    command.stderr(Stdio::piped());
+    let command_text = format!("{command:?}");
+    let output = command
+        .output()
+        .with_context(|| format!("failed to run Serena dependency check: {command_text}"))?;
+    let data = json!({
+        "command": command_text,
+        "status": output.status.code(),
+        "success": output.status.success(),
+        "stdout_tail": tail_text(&String::from_utf8_lossy(&output.stdout), 20),
+        "stderr_tail": tail_text(&String::from_utf8_lossy(&output.stderr), 20)
+    });
+    if !output.status.success() {
+        bail!("Serena dependency check failed: {data}");
+    }
+    print_ok_unrecorded("install_deps", &ws.root, data)
 }
 
 fn stop(ws: &Workspace) -> Result<()> {
@@ -1150,6 +1234,17 @@ fn serena_command(ws: &Workspace) -> Command {
         "serena",
     ]);
     cmd
+}
+
+fn serena_runner_label(ws: &Workspace) -> String {
+    if let Some(command) = &ws.config.serena_command {
+        return command.clone();
+    }
+    if command_exists("serena") {
+        "serena".to_owned()
+    } else {
+        "uvx -p 3.13 --from git+https://github.com/oraios/serena serena".to_owned()
+    }
 }
 
 fn read_config(root: &Path) -> Result<Config> {
@@ -1914,6 +2009,12 @@ fn tail_file(path: &Path, lines: usize) -> Result<Vec<String>> {
     let mut tail = text.lines().rev().take(lines).collect::<Vec<_>>();
     tail.reverse();
     Ok(tail.into_iter().map(ToOwned::to_owned).collect())
+}
+
+fn tail_text(text: &str, lines: usize) -> Vec<String> {
+    let mut tail = text.lines().rev().take(lines).collect::<Vec<_>>();
+    tail.reverse();
+    tail.into_iter().map(ToOwned::to_owned).collect()
 }
 
 fn command_path(ws: &Workspace, command_id: &str) -> PathBuf {
