@@ -11,6 +11,8 @@ Run commands from the project root or a subdirectory:
 serena-rs <command> ...
 ```
 
+Use `serena-rs <command> --help` when argument format is unclear; command help includes examples for locations, symbol paths, and write confirmations.
+
 ## Workflow
 
 1. Use `doctor --file <file>` when first checking a project or dependency setup.

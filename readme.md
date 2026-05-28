@@ -217,6 +217,14 @@ Failures also print JSON:
 
 Runtime failures use this JSON shape on stderr and return a non-zero exit code. Argument parsing errors come from clap and may use normal CLI error text.
 
+Every command has built-in help with argument formats and examples:
+
+```bash
+serena-rs --help
+serena-rs refs --help
+serena-rs doctor --help
+```
+
 Successful commands are recorded under `.serena/serena-rs/commands/` so `explain-empty` can inspect prior output. If command history cannot be written, the command still succeeds and reports a warning.
 
 ## Read-Only Commands

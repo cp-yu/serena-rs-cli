@@ -56,7 +56,8 @@ const DEFAULT_SKILL: &str = include_str!("../../../skills/serena-lsp-tools/SKILL
     name = "serena-rs",
     version,
     disable_version_flag = true,
-    about = "Project-local Serena MCP adapter"
+    about = "Project-local Serena MCP adapter",
+    after_help = "Recommended agent setup:\n  serena-rs init --cli codex --cli claude-code\n  serena-rs install-deps\n  serena-rs doctor --file src/main.rs\n  serena-rs health --file src/main.rs\n\nLocation format: <file>:<line>[:col]\nSymbol path format: <file>@<name_path>\nWrite commands require --apply."
 )]
 struct Cli {
     #[arg(
@@ -73,28 +74,48 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
+    #[command(about = "Install project-local serena-rs config and agent skills")]
     Init(InitArgs),
+    #[command(about = "Show recorded project server state without starting semantic probes")]
     Status,
+    #[command(about = "Check local dependencies and optionally probe a source file")]
     Doctor(DoctorArgs),
+    #[command(about = "Pre-run the selected Serena runner and warm the uvx cache")]
     InstallDeps,
+    #[command(about = "Start or reuse the project-local Serena MCP server")]
     Start,
+    #[command(about = "Stop the recorded project-local Serena MCP server")]
     Stop,
+    #[command(about = "Check MCP health and optionally prove one file's language server")]
     Health(HealthArgs),
+    #[command(about = "List top-level semantic symbols in a source file")]
     Overview(FileArgs),
+    #[command(about = "Find semantic symbols by name or name path")]
     Symbol(SymbolArgs),
+    #[command(about = "Resolve the declaration at <file>:<line>[:col]")]
     Declaration(LocationArgs),
+    #[command(about = "Find semantic references for the symbol at <file>:<line>[:col]")]
     Refs(RefsArgs),
+    #[command(about = "Return language-server diagnostics for one source file")]
     Diagnostics(DiagnosticsArgs),
+    #[command(about = "Rename a semantic symbol; requires --apply")]
     Rename(RenameArgs),
+    #[command(about = "Replace a symbol body from stdin; requires --stdin --apply")]
     ReplaceBody(EditSymbolArgs),
+    #[command(about = "Insert text before a symbol from stdin; requires --stdin --apply")]
     InsertBefore(EditSymbolArgs),
+    #[command(about = "Insert text after a symbol from stdin; requires --stdin --apply")]
     InsertAfter(EditSymbolArgs),
+    #[command(about = "Convenience symbol lookup: <file>@<name_path> or <name>")]
     Locate(LocateArgs),
+    #[command(about = "Explain a previous empty or confusing command result")]
     ExplainEmpty(ExplainEmptyArgs),
+    #[command(about = "Manage serena-rs project-local cache")]
     Cache {
         #[command(subcommand)]
         command: CacheCmd,
     },
+    #[command(about = "Inspect Serena server runtime details")]
     Server {
         #[command(subcommand)]
         command: ServerCmd,
@@ -102,96 +123,139 @@ enum Cmd {
 }
 
 #[derive(Args)]
+#[command(
+    after_help = "Examples:\n  serena-rs overview src/main.rs\n  serena-rs overview src/main.rs --depth 1"
+)]
 struct FileArgs {
+    #[arg(help = "Source file path, relative to the project root or absolute")]
     file: String,
-    #[arg(long, default_value_t = 0)]
+    #[arg(long, default_value_t = 0, help = "Nested symbol expansion depth")]
     depth: u32,
 }
 
 #[derive(Args)]
+#[command(after_help = "Examples:\n  serena-rs health\n  serena-rs health --file src/main.rs")]
 struct HealthArgs {
-    #[arg(long)]
+    #[arg(long, help = "Source file to probe with overview and diagnostics")]
     file: Option<String>,
 }
 
 #[derive(Args)]
+#[command(after_help = "Examples:\n  serena-rs doctor\n  serena-rs doctor --file src/main.rs")]
 struct DoctorArgs {
-    #[arg(long)]
+    #[arg(long, help = "Source file to probe after dependency checks")]
     file: Option<String>,
 }
 
 #[derive(Args)]
+#[command(
+    after_help = "Examples:\n  serena-rs symbol UserService\n  serena-rs symbol UserService --file src/main.rs --depth 1"
+)]
 struct SymbolArgs {
+    #[arg(help = "Symbol name or Serena name_path pattern")]
     name_or_path: String,
-    #[arg(long)]
+    #[arg(long, help = "Limit search to a source file")]
     file: Option<String>,
-    #[arg(long, default_value_t = 0)]
+    #[arg(long, default_value_t = 0, help = "Nested symbol expansion depth")]
     depth: u32,
 }
 
 #[derive(Args)]
+#[command(after_help = "Example:\n  serena-rs diagnostics src/main.rs")]
 struct DiagnosticsArgs {
+    #[arg(help = "Source file path, relative to the project root or absolute")]
     file: String,
 }
 
 #[derive(Args)]
+#[command(
+    after_help = "Examples:\n  serena-rs declaration src/main.rs:42\n  serena-rs declaration src/main.rs:42:7"
+)]
 struct LocationArgs {
+    #[arg(help = "Location in <file>:<line>[:col] format; line and col are 1-based")]
     location: String,
 }
 
 #[derive(Args)]
+#[command(
+    after_help = "Examples:\n  serena-rs refs src/main.rs:42\n  serena-rs refs src/main.rs:42:7 --include-declaration\n\nIf Serena returns no references, output includes rg_cross_check when rg is available."
+)]
 struct RefsArgs {
+    #[arg(help = "Location in <file>:<line>[:col] format; line and col are 1-based")]
     location: String,
-    #[arg(long)]
+    #[arg(long, help = "Include the resolved declaration payload in output")]
     include_declaration: bool,
 }
 
 #[derive(Args)]
+#[command(
+    after_help = "Example:\n  serena-rs rename src/main.rs@UserService NewUserService --apply"
+)]
 struct RenameArgs {
+    #[arg(help = "Target symbol in <file>@<name_path> format")]
     symbol_path: String,
+    #[arg(help = "New symbol name")]
     new_name: String,
-    #[arg(long)]
+    #[arg(long, help = "Required confirmation; dry-run is not available")]
     apply: bool,
 }
 
 #[derive(Args)]
+#[command(
+    after_help = "Examples:\n  printf '%s\\n' 'fn body() {}' | serena-rs replace-body src/main.rs@foo --stdin --apply\n  printf '%s\\n' '// note' | serena-rs insert-before src/main.rs@foo --stdin --apply"
+)]
 struct EditSymbolArgs {
+    #[arg(help = "Target symbol in <file>@<name_path> format")]
     symbol_path: String,
-    #[arg(long)]
+    #[arg(long, help = "Read inserted/replacement text from stdin")]
     stdin: bool,
-    #[arg(long)]
+    #[arg(long, help = "Required confirmation; dry-run is not available")]
     apply: bool,
 }
 
 #[derive(Args)]
+#[command(
+    after_help = "Examples:\n  serena-rs locate UserService\n  serena-rs locate 'src/main.rs@UserService/new'"
+)]
 struct LocateArgs {
+    #[arg(help = "Symbol query as <name> or <file>@<name_path>")]
     query: String,
 }
 
 #[derive(Args)]
+#[command(
+    after_help = "Example:\n  serena-rs explain-empty 1779970725352120-3552620-find_referencing_symbols"
+)]
 struct ExplainEmptyArgs {
+    #[arg(help = "command_id from a previous successful JSON output")]
     command_id: String,
 }
 
 #[derive(Args)]
+#[command(
+    after_help = "Examples:\n  serena-rs init\n  serena-rs init --cli codex\n  serena-rs init --cli codex --cli claude-code"
+)]
 struct InitArgs {
-    #[arg(long = "cli", value_parser = ["codex", "claude-code"])]
+    #[arg(long = "cli", value_parser = ["codex", "claude-code"], help = "Install skill for a target agent CLI; repeat for multiple")]
     cli: Vec<String>,
 }
 
 #[derive(Subcommand)]
 enum CacheCmd {
+    #[command(about = "Remove command history and stale state; stop the server first")]
     Clear,
 }
 
 #[derive(Subcommand)]
 enum ServerCmd {
+    #[command(about = "List recent Serena MCP logs and optionally tail the newest log")]
     Logs(LogArgs),
 }
 
 #[derive(Args)]
+#[command(after_help = "Examples:\n  serena-rs server logs\n  serena-rs server logs --tail 80")]
 struct LogArgs {
-    #[arg(long)]
+    #[arg(long, help = "Include the last N lines from the newest Serena MCP log")]
     tail: Option<usize>,
 }
 
