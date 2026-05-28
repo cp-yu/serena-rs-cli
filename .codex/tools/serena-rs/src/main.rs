@@ -172,7 +172,13 @@ enum CacheCmd {
 
 #[derive(Subcommand)]
 enum ServerCmd {
-    Logs,
+    Logs(LogArgs),
+}
+
+#[derive(Args)]
+struct LogArgs {
+    #[arg(long)]
+    tail: Option<usize>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -260,27 +266,16 @@ fn run() -> Result<()> {
             print_ok(
                 "health",
                 &ws.root,
-                json!({ "port": state.port, "tools": tools.len() }),
+                json!({
+                    "port": state.port,
+                    "tools": tools.len(),
+                    "semantic_health": semantic_health(&ws.root)
+                }),
             )?;
             Ok(())
         }
-        Cmd::Overview(args) => call_tool(
-            &ws,
-            "get_symbols_overview",
-            json!({ "relative_path": normalize_relative(&ws.root, &args.file)?, "depth": args.depth }),
-        ),
-        Cmd::Symbol(args) => {
-            let mut params = Map::new();
-            params.insert("name_path_pattern".into(), json!(args.name_or_path));
-            params.insert("depth".into(), json!(args.depth));
-            if let Some(file) = args.file {
-                params.insert(
-                    "relative_path".into(),
-                    json!(normalize_relative(&ws.root, &file)?),
-                );
-            }
-            call_tool(&ws, "find_symbol", Value::Object(params))
-        }
+        Cmd::Overview(args) => overview(&ws, args),
+        Cmd::Symbol(args) => symbol(&ws, args),
         Cmd::Declaration(args) => {
             let loc = parse_location(&ws.root, &args.location)?;
             declaration(&ws, loc)
@@ -320,7 +315,7 @@ fn run() -> Result<()> {
             CacheCmd::Clear => cache_clear(&ws),
         },
         Cmd::Server { command } => match command {
-            ServerCmd::Logs => server_logs(&ws),
+            ServerCmd::Logs(args) => server_logs(&ws, args),
         },
     }
 }
@@ -467,7 +462,15 @@ impl McpClient {
 }
 
 fn status(ws: &Workspace) -> Result<()> {
-    let _lock = project_lock(ws, LockMode::Shared)?;
+    let (lock, warnings) = match project_lock(ws, LockMode::Shared) {
+        Ok(lock) => (Some(lock), Vec::new()),
+        Err(err) => (
+            None,
+            vec![format!(
+                "project lock was not acquired for status: {err}; reading state without locking"
+            )],
+        ),
+    };
     let state = read_state(ws)?;
     let data = match state {
         Some(state) => {
@@ -483,7 +486,8 @@ fn status(ws: &Workspace) -> Result<()> {
         }
         None => json!({ "running": false, "state": ws.state_path() }),
     };
-    print_ok("status", &ws.root, data)
+    drop(lock);
+    print_ok_with_warnings("status", &ws.root, data, warnings)
 }
 
 fn stop(ws: &Workspace) -> Result<()> {
@@ -621,46 +625,127 @@ fn push_init_target(targets: &mut Vec<InitTarget>, target: InitTarget) {
     }
 }
 
+fn overview(ws: &Workspace, args: FileArgs) -> Result<()> {
+    let relative_path = normalize_relative(&ws.root, &args.file)?;
+    let data = call_tool_value(
+        ws,
+        "get_symbols_overview",
+        json!({ "relative_path": relative_path, "depth": args.depth }),
+    )?;
+    let warnings = semantic_result_warnings(ws, Some(&relative_path), None, &data)?;
+    print_ok_with_context(
+        "get_symbols_overview",
+        &ws.root,
+        data,
+        warnings,
+        Some(json!({ "relative_path": relative_path })),
+    )
+}
+
+fn symbol(ws: &Workspace, args: SymbolArgs) -> Result<()> {
+    let mut params = Map::new();
+    let identifier = args.name_or_path;
+    params.insert("name_path_pattern".into(), json!(identifier));
+    params.insert("depth".into(), json!(args.depth));
+    let relative_path = if let Some(file) = args.file {
+        let relative_path = normalize_relative(&ws.root, &file)?;
+        params.insert("relative_path".into(), json!(relative_path));
+        Some(relative_path)
+    } else {
+        None
+    };
+    let data = call_tool_value(ws, "find_symbol", Value::Object(params))?;
+    let warnings =
+        semantic_result_warnings(ws, relative_path.as_deref(), Some(&identifier), &data)?;
+    print_ok_with_context(
+        "find_symbol",
+        &ws.root,
+        data,
+        warnings,
+        Some(json!({ "relative_path": relative_path, "identifier": identifier })),
+    )
+}
+
 fn refs(ws: &Workspace, args: RefsArgs) -> Result<()> {
     let loc = parse_location(&ws.root, &args.location)?;
     let query = identifier_query_at(&ws.root.join(&loc.relative_path), loc.line, loc.col)?;
-    let (_lock, state) = read_server(ws)?;
+    let (lock, state) = read_server(ws)?;
     let mut mcp = McpClient::connect(state.port)?;
     mcp.initialize()?;
-    let (declaration, relative_path, name_path) = resolve_symbol_at(&mut mcp, &loc, &query)?;
+    let resolved = resolve_symbol_at(&mut mcp, &loc, &query);
+    let (declaration, relative_path, name_path) = match resolved {
+        Ok(resolved) => resolved,
+        Err(err) => {
+            drop(lock);
+            bail!("{}", symbol_resolution_failure(ws, &loc, &query, err));
+        }
+    };
     let references = mcp.call_tool(
         "find_referencing_symbols",
         json!({ "relative_path": relative_path, "name_path": name_path }),
     )?;
-    let warnings = if empty_reference_result(&references) {
-        vec![format!(
+    drop(lock);
+    let mut warnings =
+        semantic_result_warnings(ws, Some(&loc.relative_path), Some(&query.name), &references)?;
+    if serena_result_empty(&references) {
+        warnings.push(format!(
             "Serena returned no references for `{name_path}`; verify with `rg {}` before assuming it is unused.",
             query.name
-        )]
-    } else {
-        Vec::new()
-    };
+        ));
+    }
     let mut data = Map::new();
     data.insert("resolved_symbol".into(), declaration.clone());
     data.insert("references".into(), references);
     if args.include_declaration {
         data.insert("declaration".into(), declaration);
     }
-    print_ok_with_warnings(
+    print_ok_with_context(
         "find_referencing_symbols",
         &ws.root,
         Value::Object(data),
         warnings,
+        Some(json!({
+            "relative_path": loc.relative_path,
+            "line": loc.line,
+            "col": loc.col,
+            "identifier": query.name,
+            "name_path": name_path
+        })),
     )
 }
 
 fn declaration(ws: &Workspace, loc: Location) -> Result<()> {
     let query = identifier_query_at(&ws.root.join(&loc.relative_path), loc.line, loc.col)?;
-    let (_lock, state) = read_server(ws)?;
+    let (lock, state) = read_server(ws)?;
     let mut mcp = McpClient::connect(state.port)?;
     mcp.initialize()?;
-    let (declaration, _, _) = resolve_symbol_at(&mut mcp, &loc, &query)?;
-    print_ok("find_declaration", &ws.root, declaration)
+    let resolved = resolve_symbol_at(&mut mcp, &loc, &query);
+    let (declaration, _, _) = match resolved {
+        Ok(resolved) => resolved,
+        Err(err) => {
+            drop(lock);
+            bail!("{}", symbol_resolution_failure(ws, &loc, &query, err));
+        }
+    };
+    drop(lock);
+    let warnings = semantic_result_warnings(
+        ws,
+        Some(&loc.relative_path),
+        Some(&query.name),
+        &declaration,
+    )?;
+    print_ok_with_context(
+        "find_declaration",
+        &ws.root,
+        declaration,
+        warnings,
+        Some(json!({
+            "relative_path": loc.relative_path,
+            "line": loc.line,
+            "col": loc.col,
+            "identifier": query.name
+        })),
+    )
 }
 
 fn resolve_symbol_at(
@@ -672,10 +757,18 @@ fn resolve_symbol_at(
         "find_declaration",
         json!({ "relative_path": loc.relative_path, "regex": query.regex }),
     );
+    let mut failures = Vec::new();
     if let Ok(declaration) = declaration {
-        if let Ok((relative_path, name_path)) = symbol_target(&declaration) {
-            return Ok((declaration, relative_path, name_path));
+        match symbol_target(&declaration) {
+            Ok((relative_path, name_path)) => return Ok((declaration, relative_path, name_path)),
+            Err(err) => failures.push(format!(
+                "{}; serena_result={}",
+                err,
+                summarize_value(&declaration)
+            )),
         }
+    } else if let Err(err) = declaration {
+        failures.push(err.to_string());
     }
     let symbol = mcp.call_tool(
         "find_symbol",
@@ -685,16 +778,38 @@ fn resolve_symbol_at(
             "max_matches": 1
         }),
     )?;
-    let (relative_path, name_path) = symbol_target(&symbol)?;
-    Ok((symbol, relative_path, name_path))
+    match symbol_target(&symbol) {
+        Ok((relative_path, name_path)) => Ok((symbol, relative_path, name_path)),
+        Err(err) => {
+            failures.push(format!(
+                "{}; serena_result={}",
+                err,
+                summarize_value(&symbol)
+            ));
+            bail!(
+                "{}; attempts=[{}]",
+                symbol_resolution_context(
+                    loc,
+                    query,
+                    "find_declaration/find_symbol",
+                    Some(&symbol)
+                ),
+                failures.join(" | ")
+            )
+        }
+    }
 }
 
 fn call_tool(ws: &Workspace, tool: &str, args: Value) -> Result<()> {
+    let data = call_tool_value(ws, tool, args)?;
+    print_ok(tool, &ws.root, data)
+}
+
+fn call_tool_value(ws: &Workspace, tool: &str, args: Value) -> Result<Value> {
     let (_lock, state) = read_server(ws)?;
     let mut mcp = McpClient::connect(state.port)?;
     mcp.initialize()?;
-    let data = mcp.call_tool(tool, args)?;
-    print_ok(tool, &ws.root, data)
+    mcp.call_tool(tool, args)
 }
 
 fn edit_symbol(ws: &Workspace, tool: &str, args: EditSymbolArgs) -> Result<()> {
@@ -746,17 +861,22 @@ fn locate(ws: &Workspace, args: LocateArgs) -> Result<()> {
     let mut params = Map::new();
     params.insert("name_path_pattern".into(), json!(name));
     params.insert("max_matches".into(), json!(20));
-    if let Some(file) = file {
-        params.insert(
-            "relative_path".into(),
-            json!(normalize_relative(&ws.root, file)?),
-        );
-    }
-    let (_lock, state) = read_server(ws)?;
-    let mut mcp = McpClient::connect(state.port)?;
-    mcp.initialize()?;
-    let data = mcp.call_tool("find_symbol", Value::Object(params))?;
-    print_ok("locate", &ws.root, data)
+    let relative_path = if let Some(file) = file {
+        let relative_path = normalize_relative(&ws.root, file)?;
+        params.insert("relative_path".into(), json!(relative_path));
+        Some(relative_path)
+    } else {
+        None
+    };
+    let data = call_tool_value(ws, "find_symbol", Value::Object(params))?;
+    let warnings = semantic_result_warnings(ws, relative_path.as_deref(), Some(name), &data)?;
+    print_ok_with_context(
+        "locate",
+        &ws.root,
+        data,
+        warnings,
+        Some(json!({ "relative_path": relative_path, "identifier": name })),
+    )
 }
 
 fn explain_empty(ws: &Workspace, args: ExplainEmptyArgs) -> Result<()> {
@@ -768,16 +888,28 @@ fn explain_empty(ws: &Workspace, args: ExplainEmptyArgs) -> Result<()> {
         bail!("unknown command id `{}`", args.command_id);
     }
     let command: Value = serde_json::from_slice(&fs::read(path)?)?;
+    let file = command_file_hint(&command);
+    let diagnostics = file
+        .as_deref()
+        .and_then(|relative_path| diagnostics_for_file(ws, relative_path).ok());
+    let mut explanations = vec![
+        "The target symbol may not be indexed by the active Serena language backend.",
+        "The query may be too broad, too narrow, or scoped to the wrong file.",
+        "For refs, verify empty results with `rg <symbol>` before assuming the symbol is unused.",
+    ];
+    if diagnostics.as_ref().is_some_and(has_fatal_diagnostics) {
+        explanations.push(
+            "Diagnostics contain fatal C/C++ language-server errors; check compile_commands.json, .clangd, and include paths before trusting semantic results.",
+        );
+    }
     print_ok(
         "explain_empty",
         &ws.root,
         json!({
             "command": command,
-            "explanations": [
-                "The target symbol may not be indexed by the active Serena language backend.",
-                "The query may be too broad, too narrow, or scoped to the wrong file.",
-                "For refs, the resolved symbol may have no project-local references."
-            ]
+            "diagnostics_file": file,
+            "diagnostics": diagnostics,
+            "explanations": explanations
         }),
     )
 }
@@ -801,7 +933,7 @@ fn cache_clear(ws: &Workspace) -> Result<()> {
     print_ok_unrecorded("cache_clear", &ws.root, json!({ "removed": removed }))
 }
 
-fn server_logs(ws: &Workspace) -> Result<()> {
+fn server_logs(ws: &Workspace, args: LogArgs) -> Result<()> {
     let home = env::var("HOME").unwrap_or_default();
     let log_root = Path::new(&home).join(".serena/logs");
     let mut logs = Vec::new();
@@ -809,7 +941,19 @@ fn server_logs(ws: &Workspace) -> Result<()> {
     logs.sort();
     logs.reverse();
     logs.truncate(20);
-    print_ok("server_logs", &ws.root, json!({ "logs": logs }))
+    let tail = if let (Some(lines), Some(path)) = (args.tail, logs.first()) {
+        Some(json!({
+            "path": path,
+            "lines": tail_file(Path::new(path), lines)?
+        }))
+    } else {
+        None
+    };
+    print_ok(
+        "server_logs",
+        &ws.root,
+        json!({ "logs": logs, "tail": tail }),
+    )
 }
 
 fn read_server(ws: &Workspace) -> Result<(FileLock, State)> {
@@ -1295,14 +1439,7 @@ fn symbol_target(result: &Value) -> Result<(String, String)> {
     if let Some(error) = serena_text_error(result) {
         bail!("{error}");
     }
-    let text = result
-        .get("content")
-        .and_then(Value::as_array)
-        .and_then(|items| items.first())
-        .and_then(|item| item.get("text"))
-        .and_then(Value::as_str)
-        .ok_or_else(|| anyhow!("tool result did not contain text content"))?;
-    let parsed: Value = serde_json::from_str(text).context("tool result text was not JSON")?;
+    let parsed = parse_serena_json_text(result).context("tool result text was not JSON")?;
     let symbol = parsed
         .as_array()
         .and_then(|items| items.first())
@@ -1320,10 +1457,17 @@ fn symbol_target(result: &Value) -> Result<(String, String)> {
     Ok((relative_path.to_owned(), name_path.to_owned()))
 }
 
-fn empty_reference_result(result: &Value) -> bool {
-    if result.as_object().is_some_and(Map::is_empty) {
+fn serena_result_empty(result: &Value) -> bool {
+    if result.as_object().is_some_and(Map::is_empty) || result.as_array().is_some_and(Vec::is_empty)
+    {
         return true;
     }
+    parse_serena_json_text(result).ok().is_some_and(|value| {
+        value.as_object().is_some_and(Map::is_empty) || value.as_array().is_some_and(Vec::is_empty)
+    })
+}
+
+fn parse_serena_json_text(result: &Value) -> Result<Value> {
     let text = result
         .get("structuredContent")
         .and_then(|v| v.get("result"))
@@ -1335,8 +1479,163 @@ fn empty_reference_result(result: &Value) -> bool {
                 .and_then(|items| items.first())
                 .and_then(|item| item.get("text"))
                 .and_then(Value::as_str)
+        })
+        .ok_or_else(|| anyhow!("tool result did not contain JSON text"))?;
+    serde_json::from_str(text).context("tool result text was not JSON")
+}
+
+fn semantic_result_warnings(
+    ws: &Workspace,
+    relative_path: Option<&str>,
+    identifier: Option<&str>,
+    result: &Value,
+) -> Result<Vec<String>> {
+    let mut warnings = Vec::new();
+    if serena_result_empty(result) {
+        warnings.push(match identifier {
+            Some(identifier) => format!(
+                "Serena returned an empty semantic result for `{identifier}`; verify with `rg {identifier}` before assuming it is missing or unused."
+            ),
+            None => {
+                "Serena returned an empty semantic result; verify with `rg` before assuming the file has no symbols or references.".to_owned()
+            }
         });
-    matches!(text.map(str::trim), Some("{}"))
+    }
+    if let Some(relative_path) = relative_path {
+        if let Ok(diagnostics) = diagnostics_for_file(ws, relative_path) {
+            if has_fatal_diagnostics(&diagnostics) {
+                warnings.push(format!(
+                    "LSP diagnostics for `{relative_path}` contain fatal errors; semantic results are not trustworthy until compile_commands.json, .clangd, or include paths are fixed."
+                ));
+            }
+        }
+    }
+    Ok(warnings)
+}
+
+fn semantic_health(root: &Path) -> Value {
+    json!({
+        "compile_commands": find_up(root, "compile_commands.json"),
+        "clangd_config": find_up(root, ".clangd"),
+        "warning": "C/C++ semantic results depend on compile_commands.json or .clangd include configuration."
+    })
+}
+
+fn find_up(root: &Path, name: &str) -> Option<String> {
+    let mut current = root.to_path_buf();
+    loop {
+        let candidate = current.join(name);
+        if candidate.exists() {
+            return Some(candidate.to_string_lossy().to_string());
+        }
+        if !current.pop() {
+            return None;
+        }
+    }
+}
+
+fn diagnostics_for_file(ws: &Workspace, relative_path: &str) -> Result<Value> {
+    let (_lock, state) = read_server(ws)?;
+    let mut mcp = McpClient::connect(state.port)?;
+    mcp.initialize()?;
+    mcp.call_tool(
+        "get_diagnostics_for_file",
+        json!({ "relative_path": relative_path }),
+    )
+}
+
+fn has_fatal_diagnostics(value: &Value) -> bool {
+    let text = value.to_string().to_ascii_lowercase();
+    [
+        "file not found",
+        "pp_file_not_found",
+        "fatal_too_many_errors",
+        "unknown_typename",
+    ]
+    .iter()
+    .any(|needle| text.contains(needle))
+}
+
+fn command_file_hint(command: &Value) -> Option<String> {
+    find_key_str(command, "relative_path")
+        .or_else(|| find_key_str(command, "relativePath"))
+        .or_else(|| find_path_like_arg(command))
+}
+
+fn find_key_str(value: &Value, key: &str) -> Option<String> {
+    match value {
+        Value::Object(map) => {
+            if let Some(found) = map.get(key).and_then(Value::as_str) {
+                return Some(found.to_owned());
+            }
+            map.values().find_map(|value| find_key_str(value, key))
+        }
+        Value::Array(items) => items.iter().find_map(|value| find_key_str(value, key)),
+        _ => None,
+    }
+}
+
+fn find_path_like_arg(value: &Value) -> Option<String> {
+    match value {
+        Value::String(text) => text
+            .split_once(':')
+            .map(|(file, _)| file)
+            .filter(|file| file.contains('/') || file.contains('.'))
+            .map(ToOwned::to_owned),
+        Value::Object(map) => map.values().find_map(find_path_like_arg),
+        Value::Array(items) => items.iter().find_map(find_path_like_arg),
+        _ => None,
+    }
+}
+
+fn symbol_resolution_context(
+    loc: &Location,
+    query: &IdentifierQuery,
+    fallback_tool: &str,
+    raw: Option<&Value>,
+) -> String {
+    let col = loc
+        .col
+        .map(|col| col.to_string())
+        .unwrap_or_else(|| "<auto>".to_owned());
+    let mut message = format!(
+        "failed to resolve symbol; file={}, line={}, col={}, identifier={}, fallback_tool={}, next=`serena-rs diagnostics {}` and `rg {}`",
+        loc.relative_path, loc.line, col, query.name, fallback_tool, loc.relative_path, query.name
+    );
+    if let Some(raw) = raw {
+        message.push_str(&format!(", serena_result={}", summarize_value(raw)));
+    }
+    message
+}
+
+fn symbol_resolution_failure(
+    ws: &Workspace,
+    loc: &Location,
+    query: &IdentifierQuery,
+    err: anyhow::Error,
+) -> String {
+    let mut message = format!(
+        "{}; source_error={err}",
+        symbol_resolution_context(loc, query, "find_declaration/find_symbol", None)
+    );
+    if let Ok(diagnostics) = diagnostics_for_file(ws, &loc.relative_path) {
+        if has_fatal_diagnostics(&diagnostics) {
+            message.push_str(
+                "; lsp_warning=LSP diagnostics contain fatal errors; semantic results are not trustworthy until compile_commands.json, .clangd, or include paths are fixed",
+            );
+        }
+    }
+    message
+}
+
+fn summarize_value(value: &Value) -> String {
+    let text = value.to_string();
+    const LIMIT: usize = 600;
+    if text.len() > LIMIT {
+        format!("{}...", &text[..LIMIT])
+    } else {
+        text
+    }
 }
 
 fn serena_text_error(result: &Value) -> Option<String> {
@@ -1377,6 +1676,13 @@ fn collect_logs(dir: &Path, logs: &mut Vec<String>) -> Result<()> {
     Ok(())
 }
 
+fn tail_file(path: &Path, lines: usize) -> Result<Vec<String>> {
+    let text = fs::read_to_string(path)?;
+    let mut tail = text.lines().rev().take(lines).collect::<Vec<_>>();
+    tail.reverse();
+    Ok(tail.into_iter().map(ToOwned::to_owned).collect())
+}
+
 fn command_path(ws: &Workspace, command_id: &str) -> PathBuf {
     ws.root
         .join(COMMANDS_DIR)
@@ -1400,8 +1706,18 @@ fn print_ok_with_warnings(
     data: Value,
     warnings: Vec<String>,
 ) -> Result<()> {
+    print_ok_with_context(tool, project, data, warnings, None)
+}
+
+fn print_ok_with_context(
+    tool: &str,
+    project: &Path,
+    data: Value,
+    mut warnings: Vec<String>,
+    context: Option<Value>,
+) -> Result<()> {
     let command_id = command_id(tool);
-    let payload = json!({
+    let mut payload = json!({
         "ok": true,
         "command_id": command_id,
         "tool": tool,
@@ -1409,7 +1725,16 @@ fn print_ok_with_warnings(
         "data": data,
         "warnings": warnings
     });
-    record_command(project, payload["command_id"].as_str().unwrap(), &payload)?;
+    if let Some(context) = context {
+        payload["context"] = context;
+    }
+    if let Ok(parsed_data) = parse_serena_json_text(&payload["data"]) {
+        payload["parsed_data"] = parsed_data;
+    }
+    if let Err(err) = record_command(project, payload["command_id"].as_str().unwrap(), &payload) {
+        warnings.push(format!("command history was not recorded: {err}"));
+        payload["warnings"] = json!(warnings);
+    }
     println!("{}", serde_json::to_string_pretty(&payload).unwrap());
     Ok(())
 }
@@ -1509,12 +1834,59 @@ mod tests {
             "structuredContent": { "result": "{}" }
         });
 
-        assert!(empty_reference_result(&result));
+        assert!(serena_result_empty(&result));
     }
 
     #[test]
     fn detects_raw_empty_reference_result() {
-        assert!(empty_reference_result(&json!({})));
+        assert!(serena_result_empty(&json!({})));
+    }
+
+    #[test]
+    fn detects_wrapped_empty_array_result() {
+        let result = json!({
+            "content": [{ "text": "[]", "type": "text" }],
+            "structuredContent": { "result": "[]" }
+        });
+
+        assert!(serena_result_empty(&result));
+    }
+
+    #[test]
+    fn parses_wrapped_serena_json_text() {
+        let result = json!({
+            "content": [{ "text": "[]", "type": "text" }],
+            "structuredContent": { "result": "[{\"name\":\"Foo\"}]" }
+        });
+
+        assert_eq!(parse_serena_json_text(&result).unwrap()[0]["name"], "Foo");
+    }
+
+    #[test]
+    fn detects_fatal_c_diagnostics() {
+        let diagnostics = json!({
+            "content": [{
+                "text": "pp_file_not_found: 'webrtc/common_audio/vad/vad_core.h' file not found"
+            }]
+        });
+
+        assert!(has_fatal_diagnostics(&diagnostics));
+    }
+
+    #[test]
+    fn extracts_command_file_hint() {
+        let command = json!({
+            "data": {
+                "resolved_symbol": {
+                    "relative_path": "common_audio/vad/vad_core.c"
+                }
+            }
+        });
+
+        assert_eq!(
+            command_file_hint(&command),
+            Some("common_audio/vad/vad_core.c".to_owned())
+        );
     }
 
     #[test]

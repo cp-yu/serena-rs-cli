@@ -192,6 +192,8 @@ Successful commands print JSON:
   "tool": "locate",
   "project": "/abs/project",
   "data": {},
+  "parsed_data": {},
+  "context": {},
   "warnings": []
 }
 ```
@@ -210,7 +212,7 @@ Failures also print JSON:
 
 Runtime failures use this JSON shape on stderr and return a non-zero exit code. Argument parsing errors come from clap and may use normal CLI error text.
 
-Successful commands are recorded under `.serena/serena-rs/commands/` so `explain-empty` can inspect prior output.
+Successful commands are recorded under `.serena/serena-rs/commands/` so `explain-empty` can inspect prior output. If command history cannot be written, the command still succeeds and reports a warning.
 
 ## Read-Only Commands
 
@@ -243,7 +245,7 @@ serena-rs refs src/main.rs:42:7 --include-declaration
 
 Locations use 1-based `line` and `col`. If `col` is omitted, the adapter uses the first identifier on that line. Pass `:col` when a line contains multiple identifiers.
 
-If `refs` resolves a symbol but Serena returns `{}`, the command succeeds with a warning to verify with `rg` before treating the symbol as unused.
+If a semantic command returns an empty result, or diagnostics contain fatal C/C++ language-server errors such as missing includes, the command warns that the result is not trustworthy and should be checked with `rg`.
 
 ```bash
 serena-rs diagnostics src/main.rs
@@ -301,13 +303,14 @@ If Serena returns an error as text, the adapter treats it as a failed command in
 serena-rs explain-empty <command-id>
 serena-rs cache clear
 serena-rs server logs
+serena-rs server logs --tail 80
 ```
 
-Use `explain-empty` after a successful command returns empty or unhelpful data. It reads the saved command JSON and prints likely causes.
+Use `explain-empty` after a successful command returns empty or unhelpful data. It reads the saved command JSON, checks target-file diagnostics when available, and prints likely causes.
 
 `cache clear` removes state and command history, but keeps the lock file. It refuses to run while the recorded server is alive; use `stop` first.
 
-`server logs` lists recent Serena MCP log files from `~/.serena/logs`.
+`server logs` lists recent Serena MCP log files from `~/.serena/logs`. Use `--tail N` to include the latest log tail inline.
 
 ## Server Behavior
 
