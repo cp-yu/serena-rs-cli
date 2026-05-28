@@ -722,16 +722,36 @@ fn refs(ws: &Workspace, args: RefsArgs) -> Result<()> {
     if let Some(adjusted) = &query.adjusted {
         warnings.push(adjusted.clone());
     }
-    if serena_result_empty(&references) {
+    let refs_empty = serena_result_empty(&references);
+    let rg_cross_check = if refs_empty {
+        Some(literal_cross_check(&ws.root, &query.name))
+    } else {
+        None
+    };
+    if refs_empty {
         warnings.retain(|warning| !warning.contains("empty semantic result"));
-        warnings.push(format!(
-            "Serena returned no references for `{name_path}`; verify with `rg {}` before assuming it is unused.",
-            query.name
-        ));
+        let rg_matches = rg_cross_check
+            .as_ref()
+            .and_then(|value| value.get("match_lines"))
+            .and_then(Value::as_u64);
+        if let Some(match_lines) = rg_matches {
+            warnings.push(format!(
+                "Serena returned no references for `{name_path}`; rg found {match_lines} literal match lines for `{}`.",
+                query.name
+            ));
+        } else {
+            warnings.push(format!(
+                "Serena returned no references for `{name_path}`; verify with `rg {}` before assuming it is unused.",
+                query.name
+            ));
+        }
     }
     let mut data = Map::new();
     data.insert("resolved_symbol".into(), declaration.clone());
     data.insert("references".into(), references);
+    if let Some(rg_cross_check) = rg_cross_check {
+        data.insert("rg_cross_check".into(), rg_cross_check);
+    }
     if args.include_declaration {
         data.insert("declaration".into(), declaration);
     }
@@ -1734,6 +1754,39 @@ fn has_untrusted_semantic_diagnostics(value: &Value) -> bool {
         ]
         .iter()
         .any(|needle| text.contains(needle))
+}
+
+fn literal_cross_check(root: &Path, identifier: &str) -> Value {
+    const SAMPLE_LIMIT: usize = 20;
+    match Command::new("rg")
+        .args(["--fixed-strings", "-n", identifier])
+        .current_dir(root)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+    {
+        Ok(output) => {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let samples = stdout
+                .lines()
+                .take(SAMPLE_LIMIT)
+                .map(ToOwned::to_owned)
+                .collect::<Vec<_>>();
+            json!({
+                "command": format!("rg --fixed-strings -n {identifier}"),
+                "match_lines": stdout.lines().count(),
+                "sample_limit": SAMPLE_LIMIT,
+                "samples": samples,
+                "status": output.status.code(),
+                "stderr": stderr.trim()
+            })
+        }
+        Err(err) => json!({
+            "command": format!("rg --fixed-strings -n {identifier}"),
+            "error": err.to_string()
+        }),
+    }
 }
 
 fn command_file_hint(command: &Value) -> Option<String> {

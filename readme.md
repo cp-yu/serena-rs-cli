@@ -160,7 +160,7 @@ Use `serena-rs` for semantic code navigation:
 - Use `symbol <name-or-path> [--file <file>]` to locate symbols.
 - Use `declaration <file:line[:col]>` and `refs <file:line[:col]>` for LSP-style navigation.
 - Use `diagnostics <file>` before and after risky edits.
-- If `refs` warns that Serena returned `{}`, verify with `rg <symbol>` before treating the symbol as unused.
+- If `refs` warns that Serena returned `{}`, inspect `rg_cross_check` before treating the symbol as unused.
 - Do not use `serena-rs` for shell, file search, file reads, or memory operations.
 ```
 
@@ -247,7 +247,7 @@ serena-rs refs src/main.rs:42:7 --include-declaration
 
 Locations use 1-based `line` and `col`. If `col` is omitted, the adapter uses the first identifier on that line, preferring function names over return types on function definitions. If the requested line has no identifier, it searches nearby lines and reports the adjustment in `context` and `warnings`. Pass `:col` when a line contains multiple identifiers.
 
-If a semantic command returns an empty result, or diagnostics contain language-server environment errors such as missing Python imports or missing C/C++ includes, the command warns that the result is not trustworthy and should be checked with `rg`.
+If a semantic command returns an empty result, or diagnostics contain language-server environment errors such as missing Python imports or missing C/C++ includes, the command warns that the result is not trustworthy. Empty `refs` output includes an `rg_cross_check` literal scan when `rg` is available.
 
 ```bash
 serena-rs diagnostics src/main.rs
