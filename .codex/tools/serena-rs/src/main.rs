@@ -1,6 +1,6 @@
 use anyhow::{anyhow, bail, Context, Result};
 use chrono::Utc;
-use clap::{Args, Parser, Subcommand};
+use clap::{ArgAction, Args, Parser, Subcommand};
 use fs2::FileExt;
 use reqwest::blocking::{Client, Response};
 use reqwest::header::{ACCEPT, CONTENT_TYPE};
@@ -55,9 +55,18 @@ const DEFAULT_SKILL: &str = include_str!("../../../skills/serena-lsp-tools/SKILL
 #[command(
     name = "serena-rs",
     version,
+    disable_version_flag = true,
     about = "Project-local Serena MCP adapter"
 )]
 struct Cli {
+    #[arg(
+        short = 'v',
+        visible_short_alias = 'V',
+        long = "version",
+        action = ArgAction::Version,
+        help = "Print version"
+    )]
+    version: Option<bool>,
     #[command(subcommand)]
     command: Cmd,
 }
