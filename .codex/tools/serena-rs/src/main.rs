@@ -910,9 +910,12 @@ fn explain_empty(ws: &Workspace, args: ExplainEmptyArgs) -> Result<()> {
         "The query may be too broad, too narrow, or scoped to the wrong file.",
         "For refs, verify empty results with `rg <symbol>` before assuming the symbol is unused.",
     ];
-    if diagnostics.as_ref().is_some_and(has_fatal_diagnostics) {
+    if diagnostics
+        .as_ref()
+        .is_some_and(has_untrusted_semantic_diagnostics)
+    {
         explanations.push(
-            "Diagnostics contain fatal C/C++ language-server errors; check compile_commands.json, .clangd, and include paths before trusting semantic results.",
+            "Diagnostics contain language-server environment errors; fix missing dependencies or language-server configuration before trusting semantic results.",
         );
     }
     print_ok(
@@ -1619,9 +1622,9 @@ fn semantic_result_warnings(
     }
     if let Some(relative_path) = relative_path {
         if let Ok(diagnostics) = diagnostics_for_file(ws, relative_path) {
-            if has_fatal_diagnostics(&diagnostics) {
+            if has_untrusted_semantic_diagnostics(&diagnostics) {
                 warnings.push(format!(
-                    "LSP diagnostics for `{relative_path}` contain fatal errors; semantic results are not trustworthy until compile_commands.json, .clangd, or include paths are fixed."
+                    "LSP diagnostics for `{relative_path}` contain environment errors; semantic results are not trustworthy until missing dependencies or language-server configuration are fixed."
                 ));
             }
         }
@@ -1631,9 +1634,20 @@ fn semantic_result_warnings(
 
 fn semantic_health(root: &Path) -> Value {
     json!({
+        "python": {
+            "pyright_config": find_up(root, "pyrightconfig.json"),
+            "pyproject": find_up(root, "pyproject.toml"),
+            "requirements": find_up(root, "requirements.txt"),
+            "warning": "Python semantic results depend on Pyright resolving the same imports and interpreter environment used by the project."
+        },
+        "cpp": {
+            "compile_commands": find_up(root, "compile_commands.json"),
+            "clangd_config": find_up(root, ".clangd"),
+            "warning": "C/C++ semantic results depend on compile_commands.json or .clangd include configuration."
+        },
         "compile_commands": find_up(root, "compile_commands.json"),
         "clangd_config": find_up(root, ".clangd"),
-        "warning": "C/C++ semantic results depend on compile_commands.json or .clangd include configuration."
+        "warning": "Check the language-specific section for semantic environment requirements."
     })
 }
 
@@ -1670,6 +1684,19 @@ fn has_fatal_diagnostics(value: &Value) -> bool {
     ]
     .iter()
     .any(|needle| text.contains(needle))
+}
+
+fn has_untrusted_semantic_diagnostics(value: &Value) -> bool {
+    let text = value.to_string().to_ascii_lowercase();
+    has_fatal_diagnostics(value)
+        || [
+            "reportmissingimports",
+            "reportmissingmodulesource",
+            "import \\\"",
+            "could not be resolved",
+        ]
+        .iter()
+        .any(|needle| text.contains(needle))
 }
 
 fn command_file_hint(command: &Value) -> Option<String> {
@@ -2010,6 +2037,18 @@ mod tests {
         });
 
         assert!(has_fatal_diagnostics(&diagnostics));
+        assert!(has_untrusted_semantic_diagnostics(&diagnostics));
+    }
+
+    #[test]
+    fn detects_python_import_environment_diagnostics() {
+        let diagnostics = json!({
+            "content": [{
+                "text": "Import \"omegaconf\" could not be resolved"
+            }]
+        });
+
+        assert!(has_untrusted_semantic_diagnostics(&diagnostics));
     }
 
     #[test]

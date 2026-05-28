@@ -245,7 +245,7 @@ serena-rs refs src/main.rs:42:7 --include-declaration
 
 Locations use 1-based `line` and `col`. If `col` is omitted, the adapter uses the first identifier on that line, preferring function names over return types on function definitions. If the requested line has no identifier, it searches nearby lines and reports the adjustment in `context` and `warnings`. Pass `:col` when a line contains multiple identifiers.
 
-If a semantic command returns an empty result, or diagnostics contain fatal C/C++ language-server errors such as missing includes, the command warns that the result is not trustworthy and should be checked with `rg`.
+If a semantic command returns an empty result, or diagnostics contain language-server environment errors such as missing Python imports or missing C/C++ includes, the command warns that the result is not trustworthy and should be checked with `rg`.
 
 ```bash
 serena-rs diagnostics src/main.rs
@@ -363,6 +363,7 @@ When a project has no healthy server, the first read command upgrades through th
 - `refs <file:line[:col]>` resolves a symbol first, then calls Serena references.
 - Write commands do not fabricate dry-run previews.
 - LSP quality depends on Serena and the project's language server setup.
+- Python projects need Pyright to resolve the same imports and interpreter environment used by the project; check `diagnostics` when semantic results look incomplete.
 - Serena may create or update `.serena/` project metadata; this repository ignores it.
 
 ## Development

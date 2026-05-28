@@ -18,7 +18,7 @@ serena-rs <command> ...
 3. Use `symbol <name-or-path> [--file <file>]` to locate definitions by semantic symbol name.
 4. Use `declaration <file:line[:col]>` and `refs <file:line[:col]>` for LSP-style navigation.
 5. Use `diagnostics <file>` before and after risky edits.
-6. Treat empty semantic results or LSP-fatal warnings as untrusted; cross-check with `rg <symbol>`.
+6. Treat empty semantic results or LSP environment warnings as untrusted; cross-check with `rg <symbol>`.
 7. Use `explain-empty <command-id>` when a successful command returns empty or confusing data.
 
 ## Commands
@@ -53,7 +53,7 @@ Write commands require explicit `--apply`; no dry-run is fabricated:
 ## Rules
 
 - Locations use 1-based `line` and `col`. If `col` is omitted, function names are preferred on function definitions; nearby-line adjustments are reported in `context` and `warnings`. Pass `:col` when a line contains multiple identifiers.
-- If a semantic command warns about an empty result or fatal diagnostics, verify with `rg <symbol>` before assuming the symbol is missing or unused.
+- If a semantic command warns about an empty result or environment diagnostics, verify with `rg <symbol>` before assuming the symbol is missing or unused.
 - Runtime success and failure are JSON. Successful output includes `command_id` for `explain-empty`; some outputs include `parsed_data` and `context`.
 - Read-only semantic commands may run concurrently after `health` succeeds.
 - `start`, `stop`, `cache clear`, and write commands are project-exclusive.
