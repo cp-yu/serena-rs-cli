@@ -141,13 +141,14 @@ It also installs the skill for the selected CLI tools:
 
 ```bash
 serena-rs health
+serena-rs health --file src/main.rs
 serena-rs overview src/main.rs
 serena-rs diagnostics src/main.rs
 ```
 
 Replace `src/main.rs` with a real source file in the target project.
 
-`health` should return `ok: true` and `tools: 9`. That proves the underlying Serena MCP server is running with the restricted semantic-tool context.
+`health` should return `ok: true` and `tools: 9`. That proves the underlying Serena MCP server is running with the restricted semantic-tool context. Use `health --file <source>` when you need to prove the language server for a specific source file is initialized.
 
 4. Tell the agent when to use it.
 
@@ -221,6 +222,7 @@ serena-rs status
 serena-rs start
 serena-rs stop
 serena-rs health
+serena-rs health --file src/main.rs
 ```
 
 ```bash

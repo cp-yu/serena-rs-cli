@@ -13,7 +13,7 @@ serena-rs <command> ...
 
 ## Workflow
 
-1. Check availability with `health` if the server state is unknown.
+1. Check availability with `health --file <file>` when a target file is known; otherwise use `health`.
 2. Use `overview <file>` before reading a large source file.
 3. Use `symbol <name-or-path> [--file <file>]` to locate definitions by semantic symbol name.
 4. Use `declaration <file:line[:col]>` and `refs <file:line[:col]>` for LSP-style navigation.
@@ -26,6 +26,7 @@ serena-rs <command> ...
 Read-only:
 
 - `health`
+- `health --file <file>`
 - `status`
 - `overview <file> [--depth N]`
 - `symbol <name-or-path> [--file <file>] [--depth N]`
@@ -55,7 +56,7 @@ Write commands require explicit `--apply`; no dry-run is fabricated:
 - Locations use 1-based `line` and `col`. If `col` is omitted, function names are preferred on function definitions; nearby-line adjustments are reported in `context` and `warnings`. Pass `:col` when a line contains multiple identifiers.
 - If a semantic command warns about an empty result or environment diagnostics, verify with `rg <symbol>` before assuming the symbol is missing or unused.
 - Runtime success and failure are JSON. Successful output includes `command_id` for `explain-empty`; some outputs include `parsed_data` and `context`.
-- Read-only semantic commands may run concurrently after `health` succeeds.
+- Read-only semantic commands may run concurrently after `health --file <file>` succeeds for the relevant language.
 - `start`, `stop`, `cache clear`, and write commands are project-exclusive.
 - `cache clear` only runs when the recorded server is not alive; use `stop` first.
 

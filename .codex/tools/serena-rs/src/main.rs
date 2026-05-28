@@ -77,7 +77,7 @@ enum Cmd {
     Status,
     Start,
     Stop,
-    Health,
+    Health(HealthArgs),
     Overview(FileArgs),
     Symbol(SymbolArgs),
     Declaration(LocationArgs),
@@ -104,6 +104,12 @@ struct FileArgs {
     file: String,
     #[arg(long, default_value_t = 0)]
     depth: u32,
+}
+
+#[derive(Args)]
+struct HealthArgs {
+    #[arg(long)]
+    file: Option<String>,
 }
 
 #[derive(Args)]
@@ -235,7 +241,7 @@ struct FileLock {
 fn main() {
     let result = run();
     if let Err(err) = result {
-        print_error("serena_rs_error", &err.to_string(), None);
+        print_error("serena_rs_error", &format_error_chain(&err), None);
         std::process::exit(1);
     }
 }
@@ -258,22 +264,7 @@ fn run() -> Result<()> {
             Ok(())
         }
         Cmd::Stop => stop(&ws),
-        Cmd::Health => {
-            let (_lock, state) = read_server(&ws)?;
-            let mut mcp = McpClient::connect(state.port)?;
-            mcp.initialize()?;
-            let tools = mcp.list_tools()?;
-            print_ok(
-                "health",
-                &ws.root,
-                json!({
-                    "port": state.port,
-                    "tools": tools.len(),
-                    "semantic_health": semantic_health(&ws.root)
-                }),
-            )?;
-            Ok(())
-        }
+        Cmd::Health(args) => health(&ws, args),
         Cmd::Overview(args) => overview(&ws, args),
         Cmd::Symbol(args) => symbol(&ws, args),
         Cmd::Declaration(args) => {
@@ -623,6 +614,48 @@ fn push_init_target(targets: &mut Vec<InitTarget>, target: InitTarget) {
     {
         targets.push(target);
     }
+}
+
+fn health(ws: &Workspace, args: HealthArgs) -> Result<()> {
+    let relative_path = args
+        .file
+        .as_deref()
+        .map(|file| normalize_relative(&ws.root, file))
+        .transpose()?;
+    let (_lock, state) = read_server(ws)?;
+    let mut mcp = McpClient::connect(state.port)?;
+    mcp.initialize()?;
+    let tools = mcp.list_tools()?;
+    let mut data = Map::new();
+    data.insert("port".into(), json!(state.port));
+    data.insert("tools".into(), json!(tools.len()));
+    data.insert("semantic_health".into(), semantic_health(&ws.root));
+    if let Some(relative_path) = relative_path {
+        data.insert(
+            "probe".into(),
+            health_probe(&mut mcp, &relative_path)
+                .with_context(|| format!("health probe failed for `{relative_path}`"))?,
+        );
+    }
+    print_ok("health", &ws.root, Value::Object(data))
+}
+
+fn health_probe(mcp: &mut McpClient, relative_path: &str) -> Result<Value> {
+    let overview = mcp.call_tool(
+        "get_symbols_overview",
+        json!({ "relative_path": relative_path, "depth": 0 }),
+    )?;
+    let diagnostics = mcp.call_tool(
+        "get_diagnostics_for_file",
+        json!({ "relative_path": relative_path }),
+    )?;
+    Ok(json!({
+        "relative_path": relative_path,
+        "overview_empty": serena_result_empty(&overview),
+        "diagnostics_untrusted": has_untrusted_semantic_diagnostics(&diagnostics),
+        "overview": overview,
+        "diagnostics": diagnostics
+    }))
 }
 
 fn overview(ws: &Workspace, args: FileArgs) -> Result<()> {
@@ -1907,6 +1940,13 @@ fn print_ok_unrecorded(tool: &str, project: &Path, data: Value) -> Result<()> {
     Ok(())
 }
 
+fn format_error_chain(err: &anyhow::Error) -> String {
+    err.chain()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(": ")
+}
+
 fn print_error(kind: &str, message: &str, hint: Option<&str>) {
     let mut error = BTreeMap::new();
     error.insert("kind", json!(kind));
@@ -2048,6 +2088,13 @@ mod tests {
             symbol_target(&result).unwrap(),
             ("lua/service.lua".to_owned(), "normalize_name".to_owned())
         );
+    }
+
+    #[test]
+    fn formats_error_chain() {
+        let err = anyhow!("inner").context("outer");
+
+        assert_eq!(format_error_chain(&err), "outer: inner");
     }
 
     #[test]
