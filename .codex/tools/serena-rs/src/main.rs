@@ -1559,10 +1559,14 @@ fn symbol_target(result: &Value) -> Result<(String, String)> {
         bail!("{error}");
     }
     let parsed = parse_serena_json_text(result).context("tool result text was not JSON")?;
-    let symbol = parsed
-        .as_array()
-        .and_then(|items| items.first())
-        .ok_or_else(|| anyhow!("tool result did not resolve to a symbol"))?;
+    let symbol = if parsed.is_object() {
+        &parsed
+    } else {
+        parsed
+            .as_array()
+            .and_then(|items| items.first())
+            .ok_or_else(|| anyhow!("tool result did not resolve to a symbol"))?
+    };
     let relative_path = symbol
         .get("relative_path")
         .or_else(|| symbol.get("relativePath"))
@@ -2026,6 +2030,24 @@ mod tests {
         });
 
         assert_eq!(parse_serena_json_text(&result).unwrap()[0]["name"], "Foo");
+    }
+
+    #[test]
+    fn resolves_single_object_symbol_result() {
+        let result = json!({
+            "content": [{
+                "text": "{\"name_path\":\"normalize_name\",\"kind\":\"Function\",\"relative_path\":\"lua/service.lua\"}",
+                "type": "text"
+            }],
+            "structuredContent": {
+                "result": "{\"name_path\":\"normalize_name\",\"kind\":\"Function\",\"relative_path\":\"lua/service.lua\"}"
+            }
+        });
+
+        assert_eq!(
+            symbol_target(&result).unwrap(),
+            ("lua/service.lua".to_owned(), "normalize_name".to_owned())
+        );
     }
 
     #[test]

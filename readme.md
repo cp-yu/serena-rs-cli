@@ -364,6 +364,8 @@ When a project has no healthy server, the first read command upgrades through th
 - Write commands do not fabricate dry-run previews.
 - LSP quality depends on Serena and the project's language server setup.
 - Python projects need Pyright to resolve the same imports and interpreter environment used by the project; check `diagnostics` when semantic results look incomplete.
+- Smoke-tested language environments on the maintainer machine: Rust, Python, TypeScript, C++, Java, and Lua passed `overview`, `declaration`, `refs`, and `diagnostics`.
+- Go requires `gopls` on `PATH`; Ruby requires `ruby-lsp` installable in the active gem environment.
 - Serena may create or update `.serena/` project metadata; this repository ignores it.
 
 ## Development
