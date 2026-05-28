@@ -8,7 +8,7 @@ Use this skill when code understanding or edits benefit from language-server sem
 Run commands from the project root or a subdirectory:
 
 ```bash
-.codex/tools/serena-rs.sh <command> ...
+serena-rs <command> ...
 ```
 
 ## Workflow

@@ -25,17 +25,15 @@ Those operations duplicate normal agent capabilities and have a larger risk surf
 ## Layout
 
 ```text
-.codex/
-  serena-rs.toml
-  serena-rs-context.yml
-  skills/
-    serena-lsp-tools/
-      SKILL.md
-  tools/
-    serena-rs.sh
-    serena-rs/
-      Cargo.toml
-      src/main.rs
+.serena/
+  serena-rs/
+    config.toml
+    context.yml
+    state.json
+    commands/
+    skills/
+      serena-lsp-tools/
+        SKILL.md
 ```
 
 ## Requirements
@@ -50,21 +48,28 @@ If `serena` is not installed, the adapter falls back to:
 uvx -p 3.13 --from git+https://github.com/oraios/serena serena
 ```
 
-## Build
+## Install
 
 ```bash
 cargo build --release --manifest-path .codex/tools/serena-rs/Cargo.toml
+install -D -m 0755 .codex/tools/serena-rs/target/release/serena-rs ~/.local/bin/serena-rs
 ```
 
-The wrapper can also build/run through Cargo when no binary exists:
+Make sure `~/.local/bin` is in `PATH`, then verify:
 
 ```bash
-.codex/tools/serena-rs.sh status
+serena-rs --version
 ```
 
 ## Configuration
 
-Project config lives at `.codex/serena-rs.toml`:
+Initialize each target project once:
+
+```bash
+serena-rs init
+```
+
+Project config lives at `.serena/serena-rs/config.toml`:
 
 ```toml
 port = 9121
@@ -85,28 +90,34 @@ Runtime state is project-local and agent-agnostic under `.serena/serena-rs/`. It
 
 Use this flow when adding `serena-rs` to another repository so coding agents can use semantic code navigation without registering Serena as a global MCP server.
 
-1. Copy the adapter files into the target project:
-
-```text
-.codex/serena-rs.toml
-.codex/serena-rs-context.yml
-.codex/tools/serena-rs.sh
-.codex/tools/serena-rs/
-.codex/skills/serena-lsp-tools/
-```
-
-2. Build the local binary:
+1. Install the CLI once:
 
 ```bash
 cargo build --release --manifest-path .codex/tools/serena-rs/Cargo.toml
+install -D -m 0755 .codex/tools/serena-rs/target/release/serena-rs ~/.local/bin/serena-rs
 ```
 
-3. Run a smoke test from the project root:
+2. Initialize the target project from its root:
 
 ```bash
-.codex/tools/serena-rs.sh health
-.codex/tools/serena-rs.sh overview src/main.rs
-.codex/tools/serena-rs.sh diagnostics src/main.rs
+cd /path/to/project
+serena-rs init
+```
+
+`init` creates project-local files under `.serena/serena-rs/`:
+
+```text
+.serena/serena-rs/config.toml
+.serena/serena-rs/context.yml
+.serena/serena-rs/skills/serena-lsp-tools/SKILL.md
+```
+
+3. Run a smoke test:
+
+```bash
+serena-rs health
+serena-rs overview src/main.rs
+serena-rs diagnostics src/main.rs
 ```
 
 Replace `src/main.rs` with a real source file in the target project.
@@ -115,35 +126,35 @@ Replace `src/main.rs` with a real source file in the target project.
 
 4. Tell the agent when to use it.
 
-For Codex, keep `.codex/skills/serena-lsp-tools/SKILL.md` available and ask the agent to use `serena-lsp-tools` for semantic navigation. If the agent does not auto-load repo-local skills, put the instruction below in `AGENTS.md`, `CLAUDE.md`, or the equivalent project instruction file:
+For Codex, install or point it at `.serena/serena-rs/skills/serena-lsp-tools/SKILL.md` and ask the agent to use `serena-lsp-tools` for semantic navigation. If the agent does not auto-load project-local skills, put the instruction below in `AGENTS.md`, `CLAUDE.md`, or the equivalent project instruction file:
 
 ```text
-Use `.codex/tools/serena-rs.sh` for semantic code navigation:
+Use `serena-rs` for semantic code navigation:
 - Start with `overview <file>` before reading large source files.
 - Use `symbol <name-or-path> [--file <file>]` to locate symbols.
 - Use `declaration <file:line[:col]>` and `refs <file:line[:col]>` for LSP-style navigation.
 - Use `diagnostics <file>` before and after risky edits.
 - If `refs` warns that Serena returned `{}`, verify with `rg <symbol>` before treating the symbol as unused.
-- Do not use this adapter for shell, file search, file reads, or memory operations.
+- Do not use `serena-rs` for shell, file search, file reads, or memory operations.
 ```
 
 5. Use the agent workflow:
 
 ```bash
-.codex/tools/serena-rs.sh overview src/main.rs
-.codex/tools/serena-rs.sh symbol UserService --file src/main.rs
-.codex/tools/serena-rs.sh declaration src/main.rs:42:7
-.codex/tools/serena-rs.sh refs src/main.rs:42:7
-.codex/tools/serena-rs.sh diagnostics src/main.rs
+serena-rs overview src/main.rs
+serena-rs symbol UserService --file src/main.rs
+serena-rs declaration src/main.rs:42:7
+serena-rs refs src/main.rs:42:7
+serena-rs diagnostics src/main.rs
 ```
 
 Write commands are available only when the agent explicitly passes `--apply`:
 
 ```bash
-.codex/tools/serena-rs.sh rename src/main.rs@UserService RenamedUserService --apply
+serena-rs rename src/main.rs@UserService RenamedUserService --apply
 ```
 
-Use `.codex/tools/serena-rs.sh stop` when you want to shut down the project-local Serena server.
+Use `serena-rs stop` when you want to shut down the project-local Serena server.
 
 ## Output
 
@@ -179,30 +190,30 @@ Successful commands are recorded under `.serena/serena-rs/commands/` so `explain
 ## Read-Only Commands
 
 ```bash
-.codex/tools/serena-rs.sh status
-.codex/tools/serena-rs.sh start
-.codex/tools/serena-rs.sh stop
-.codex/tools/serena-rs.sh health
+serena-rs status
+serena-rs start
+serena-rs stop
+serena-rs health
 ```
 
 ```bash
-.codex/tools/serena-rs.sh overview src/main.rs
-.codex/tools/serena-rs.sh overview src/main.rs --depth 1
+serena-rs overview src/main.rs
+serena-rs overview src/main.rs --depth 1
 ```
 
 ```bash
-.codex/tools/serena-rs.sh symbol UserService
-.codex/tools/serena-rs.sh symbol UserService --file src/main.rs --depth 1
+serena-rs symbol UserService
+serena-rs symbol UserService --file src/main.rs --depth 1
 ```
 
 ```bash
-.codex/tools/serena-rs.sh declaration src/main.rs:42
-.codex/tools/serena-rs.sh declaration src/main.rs:42:7
+serena-rs declaration src/main.rs:42
+serena-rs declaration src/main.rs:42:7
 ```
 
 ```bash
-.codex/tools/serena-rs.sh refs src/main.rs:42
-.codex/tools/serena-rs.sh refs src/main.rs:42:7 --include-declaration
+serena-rs refs src/main.rs:42
+serena-rs refs src/main.rs:42:7 --include-declaration
 ```
 
 Locations use 1-based `line` and `col`. If `col` is omitted, the adapter uses the first identifier on that line. Pass `:col` when a line contains multiple identifiers.
@@ -210,7 +221,7 @@ Locations use 1-based `line` and `col`. If `col` is omitted, the adapter uses th
 If `refs` resolves a symbol but Serena returns `{}`, the command succeeds with a warning to verify with `rg` before treating the symbol as unused.
 
 ```bash
-.codex/tools/serena-rs.sh diagnostics src/main.rs
+serena-rs diagnostics src/main.rs
 ```
 
 ## Locate
@@ -218,8 +229,8 @@ If `refs` resolves a symbol but Serena returns `{}`, the command succeeds with a
 `locate` is a convenience wrapper around symbol lookup.
 
 ```bash
-.codex/tools/serena-rs.sh locate "src/main.rs@UserService"
-.codex/tools/serena-rs.sh locate "UserService"
+serena-rs locate "src/main.rs@UserService"
+serena-rs locate "UserService"
 ```
 
 Use `file@symbol-path` when the project has repeated symbol names.
@@ -237,22 +248,22 @@ Symbol paths use:
 Examples:
 
 ```bash
-.codex/tools/serena-rs.sh rename src/main.rs@UserService RenamedUserService --apply
+serena-rs rename src/main.rs@UserService RenamedUserService --apply
 ```
 
 ```bash
 printf 'fn new_body() {}\n' | \
-  .codex/tools/serena-rs.sh replace-body src/main.rs@old_body --stdin --apply
+  serena-rs replace-body src/main.rs@old_body --stdin --apply
 ```
 
 ```bash
 printf 'fn helper() {}\n' | \
-  .codex/tools/serena-rs.sh insert-before src/main.rs@main --stdin --apply
+  serena-rs insert-before src/main.rs@main --stdin --apply
 ```
 
 ```bash
 printf 'fn helper() {}\n' | \
-  .codex/tools/serena-rs.sh insert-after src/main.rs@main --stdin --apply
+  serena-rs insert-after src/main.rs@main --stdin --apply
 ```
 
 Write command output includes `changed_files`.
@@ -262,9 +273,9 @@ If Serena returns an error as text, the adapter treats it as a failed command in
 ## Agent Helpers
 
 ```bash
-.codex/tools/serena-rs.sh explain-empty <command-id>
-.codex/tools/serena-rs.sh cache clear
-.codex/tools/serena-rs.sh server logs
+serena-rs explain-empty <command-id>
+serena-rs cache clear
+serena-rs server logs
 ```
 
 Use `explain-empty` after a successful command returns empty or unhelpful data. It reads the saved command JSON and prints likely causes.
@@ -278,7 +289,7 @@ Use `explain-empty` after a successful command returns empty or unhelpful data. 
 The adapter:
 
 - Finds the project root from `.git` or `.serena/project.yml`
-- Starts Serena with an explicit project path and `.codex/serena-rs-context.yml`
+- Starts Serena with an explicit project path and `.serena/serena-rs/context.yml`
 - Uses streamable HTTP on `127.0.0.1`
 - Writes state to `.serena/serena-rs/state.json`
 - Records the Serena launcher process group id as `pid`
@@ -341,22 +352,4 @@ cd .codex/tools/serena-rs
 cargo fmt --check
 cargo test
 cargo build --release
-```
-
-## Copying To Another Project
-
-Copy these paths:
-
-```text
-.codex/serena-rs.toml
-.codex/serena-rs-context.yml
-.codex/tools/serena-rs.sh
-.codex/tools/serena-rs/
-.codex/skills/serena-lsp-tools/
-```
-
-Then build:
-
-```bash
-cargo build --release --manifest-path .codex/tools/serena-rs/Cargo.toml
 ```

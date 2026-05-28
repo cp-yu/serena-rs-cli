@@ -22,11 +22,33 @@ const DEFAULT_PORT: u16 = 9121;
 const DEFAULT_TIMEOUT_MS: u64 = 60_000;
 const PROTOCOL_VERSION: &str = "2025-06-18";
 const STATE_PATH: &str = ".serena/serena-rs/state.json";
-const CONFIG_PATH: &str = ".codex/serena-rs.toml";
-const CONTEXT_PATH: &str = ".codex/serena-rs-context.yml";
+const CONFIG_PATH: &str = ".serena/serena-rs/config.toml";
+const LEGACY_CONFIG_PATH: &str = ".codex/serena-rs.toml";
+const CONTEXT_PATH: &str = ".serena/serena-rs/context.yml";
 const COMMANDS_DIR: &str = ".serena/serena-rs/commands";
 const LOCK_PATH: &str = ".serena/serena-rs/lock";
 const STARTUP_LOCK_PATH: &str = ".cache/serena-rs/startup.lock";
+const SKILL_PATH: &str = ".serena/serena-rs/skills/serena-lsp-tools/SKILL.md";
+const DEFAULT_CONFIG: &str = "port = 9121\nstartup_timeout_ms = 60000\n";
+const DEFAULT_CONTEXT: &str = r#"description: Serena-rs semantic code navigation context with only wrapped language tools.
+prompt: |
+  Use only the semantic code tools exposed by serena-rs.
+
+fixed_tools:
+  - get_symbols_overview
+  - find_symbol
+  - find_declaration
+  - find_referencing_symbols
+  - get_diagnostics_for_file
+  - rename_symbol
+  - replace_symbol_body
+  - insert_before_symbol
+  - insert_after_symbol
+
+tool_description_overrides: {}
+single_project: true
+"#;
+const DEFAULT_SKILL: &str = include_str!("../../../skills/serena-lsp-tools/SKILL.md");
 
 #[derive(Parser)]
 #[command(
@@ -41,6 +63,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
+    Init,
     Status,
     Start,
     Stop,
@@ -200,6 +223,7 @@ fn run() -> Result<()> {
     let ws = Workspace::load(env::current_dir()?)?;
 
     match cli.command {
+        Cmd::Init => init(&ws),
         Cmd::Status => status(&ws),
         Cmd::Start => {
             let _lock = project_lock(&ws, LockMode::Exclusive)?;
@@ -459,6 +483,36 @@ fn stop(ws: &Workspace) -> Result<()> {
         "stop",
         &ws.root,
         json!({ "stopped": true, "pid": state.pid }),
+    )
+}
+
+fn init(ws: &Workspace) -> Result<()> {
+    let _lock = project_lock(ws, LockMode::Exclusive)?;
+    let files = [
+        (ws.root.join(CONFIG_PATH), DEFAULT_CONFIG),
+        (ws.root.join(CONTEXT_PATH), DEFAULT_CONTEXT),
+        (ws.root.join(SKILL_PATH), DEFAULT_SKILL),
+    ];
+    let mut written = Vec::new();
+    let mut existing = Vec::new();
+    for (path, content) in files {
+        if path.exists() {
+            existing.push(path.to_string_lossy().to_string());
+            continue;
+        }
+        atomic_write(&path, content.as_bytes())?;
+        written.push(path.to_string_lossy().to_string());
+    }
+    print_ok_unrecorded(
+        "init",
+        &ws.root,
+        json!({
+            "written": written,
+            "existing": existing,
+            "config": ws.root.join(CONFIG_PATH),
+            "context": ws.root.join(CONTEXT_PATH),
+            "skill": ws.root.join(SKILL_PATH)
+        }),
     )
 }
 
@@ -781,7 +835,11 @@ fn serena_command(ws: &Workspace) -> Command {
 }
 
 fn read_config(root: &Path) -> Result<Config> {
-    let path = root.join(CONFIG_PATH);
+    let path = if root.join(CONFIG_PATH).exists() {
+        root.join(CONFIG_PATH)
+    } else {
+        root.join(LEGACY_CONFIG_PATH)
+    };
     if !path.exists() {
         return Ok(Config {
             serena_command: None,
