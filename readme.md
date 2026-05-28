@@ -31,9 +31,14 @@ Those operations duplicate normal agent capabilities and have a larger risk surf
     context.yml
     state.json
     commands/
-    skills/
-      serena-lsp-tools/
-        SKILL.md
+.codex/
+  skills/
+    serena-lsp-tools/
+      SKILL.md
+.claude/
+  skills/
+    serena-lsp-tools/
+      SKILL.md
 ```
 
 ## Requirements
@@ -67,6 +72,12 @@ Initialize each target project once:
 
 ```bash
 serena-rs init
+```
+
+Without `--cli`, interactive terminals can choose one or more targets, for example `1,2` or `codex claude-code`. Non-interactive runs install both. To pin targets explicitly:
+
+```bash
+serena-rs init --cli codex --cli claude-code
 ```
 
 Project config lives at `.serena/serena-rs/config.toml`:
@@ -104,12 +115,26 @@ cd /path/to/project
 serena-rs init
 ```
 
-`init` creates project-local files under `.serena/serena-rs/`:
+Use explicit targets in scripts:
+
+```bash
+serena-rs init --cli codex
+serena-rs init --cli claude-code
+serena-rs init --cli codex --cli claude-code
+```
+
+`init` creates shared runtime config:
 
 ```text
 .serena/serena-rs/config.toml
 .serena/serena-rs/context.yml
-.serena/serena-rs/skills/serena-lsp-tools/SKILL.md
+```
+
+It also installs the skill for the selected CLI tools:
+
+```text
+.codex/skills/serena-lsp-tools/SKILL.md
+.claude/skills/serena-lsp-tools/SKILL.md
 ```
 
 3. Run a smoke test:
@@ -126,7 +151,7 @@ Replace `src/main.rs` with a real source file in the target project.
 
 4. Tell the agent when to use it.
 
-For Codex, install or point it at `.serena/serena-rs/skills/serena-lsp-tools/SKILL.md` and ask the agent to use `serena-lsp-tools` for semantic navigation. If the agent does not auto-load project-local skills, put the instruction below in `AGENTS.md`, `CLAUDE.md`, or the equivalent project instruction file:
+Ask the agent to use `serena-lsp-tools` for semantic navigation. If the agent does not auto-load project-local skills, put the instruction below in `AGENTS.md`, `CLAUDE.md`, or the equivalent project instruction file:
 
 ```text
 Use `serena-rs` for semantic code navigation:

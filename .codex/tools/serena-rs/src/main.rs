@@ -9,7 +9,7 @@ use serde_json::{json, Map, Value};
 use std::collections::BTreeMap;
 use std::env;
 use std::fs::{self, File, OpenOptions};
-use std::io::{Read, Write};
+use std::io::{IsTerminal, Read, Write};
 use std::net::TcpListener;
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
@@ -28,7 +28,8 @@ const CONTEXT_PATH: &str = ".serena/serena-rs/context.yml";
 const COMMANDS_DIR: &str = ".serena/serena-rs/commands";
 const LOCK_PATH: &str = ".serena/serena-rs/lock";
 const STARTUP_LOCK_PATH: &str = ".cache/serena-rs/startup.lock";
-const SKILL_PATH: &str = ".serena/serena-rs/skills/serena-lsp-tools/SKILL.md";
+const CODEX_SKILL_PATH: &str = ".codex/skills/serena-lsp-tools/SKILL.md";
+const CLAUDE_CODE_SKILL_PATH: &str = ".claude/skills/serena-lsp-tools/SKILL.md";
 const DEFAULT_CONFIG: &str = "port = 9121\nstartup_timeout_ms = 60000\n";
 const DEFAULT_CONTEXT: &str = r#"description: Serena-rs semantic code navigation context with only wrapped language tools.
 prompt: |
@@ -63,7 +64,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
-    Init,
+    Init(InitArgs),
     Status,
     Start,
     Stop,
@@ -149,6 +150,12 @@ struct ExplainEmptyArgs {
     command_id: String,
 }
 
+#[derive(Args)]
+struct InitArgs {
+    #[arg(long = "cli", value_parser = ["codex", "claude-code"])]
+    cli: Vec<String>,
+}
+
 #[derive(Subcommand)]
 enum CacheCmd {
     Clear,
@@ -223,7 +230,7 @@ fn run() -> Result<()> {
     let ws = Workspace::load(env::current_dir()?)?;
 
     match cli.command {
-        Cmd::Init => init(&ws),
+        Cmd::Init(args) => init(&ws, args),
         Cmd::Status => status(&ws),
         Cmd::Start => {
             let _lock = project_lock(&ws, LockMode::Exclusive)?;
@@ -486,22 +493,29 @@ fn stop(ws: &Workspace) -> Result<()> {
     )
 }
 
-fn init(ws: &Workspace) -> Result<()> {
+fn init(ws: &Workspace, args: InitArgs) -> Result<()> {
     let _lock = project_lock(ws, LockMode::Exclusive)?;
-    let files = [
-        (ws.root.join(CONFIG_PATH), DEFAULT_CONFIG),
-        (ws.root.join(CONTEXT_PATH), DEFAULT_CONTEXT),
-        (ws.root.join(SKILL_PATH), DEFAULT_SKILL),
+    let targets = init_targets(args.cli)?;
+    let mut files = vec![
+        (ws.root.join(CONFIG_PATH), DEFAULT_CONFIG, "config"),
+        (ws.root.join(CONTEXT_PATH), DEFAULT_CONTEXT, "context"),
     ];
+    for target in &targets {
+        files.push((
+            ws.root.join(target.skill_path()),
+            DEFAULT_SKILL,
+            target.name(),
+        ));
+    }
     let mut written = Vec::new();
     let mut existing = Vec::new();
-    for (path, content) in files {
+    for (path, content, kind) in files {
         if path.exists() {
-            existing.push(path.to_string_lossy().to_string());
+            existing.push(json!({ "kind": kind, "path": path }));
             continue;
         }
         atomic_write(&path, content.as_bytes())?;
-        written.push(path.to_string_lossy().to_string());
+        written.push(json!({ "kind": kind, "path": path }));
     }
     print_ok_unrecorded(
         "init",
@@ -511,9 +525,91 @@ fn init(ws: &Workspace) -> Result<()> {
             "existing": existing,
             "config": ws.root.join(CONFIG_PATH),
             "context": ws.root.join(CONTEXT_PATH),
-            "skill": ws.root.join(SKILL_PATH)
+            "cli": targets.iter().map(|target| target.name()).collect::<Vec<_>>()
         }),
     )
+}
+
+#[derive(Clone, Copy)]
+enum InitTarget {
+    Codex,
+    ClaudeCode,
+}
+
+impl InitTarget {
+    fn name(self) -> &'static str {
+        match self {
+            InitTarget::Codex => "codex",
+            InitTarget::ClaudeCode => "claude-code",
+        }
+    }
+
+    fn skill_path(self) -> &'static str {
+        match self {
+            InitTarget::Codex => CODEX_SKILL_PATH,
+            InitTarget::ClaudeCode => CLAUDE_CODE_SKILL_PATH,
+        }
+    }
+}
+
+fn init_targets(cli: Vec<String>) -> Result<Vec<InitTarget>> {
+    if !cli.is_empty() {
+        return cli
+            .into_iter()
+            .map(|name| match name.as_str() {
+                "codex" => Ok(InitTarget::Codex),
+                "claude-code" => Ok(InitTarget::ClaudeCode),
+                _ => bail!("unsupported CLI `{name}`"),
+            })
+            .collect();
+    }
+    if std::io::stdin().is_terminal() {
+        return prompt_init_targets();
+    }
+    Ok(vec![InitTarget::Codex, InitTarget::ClaudeCode])
+}
+
+fn prompt_init_targets() -> Result<Vec<InitTarget>> {
+    eprintln!("Install serena-lsp-tools skill for which CLI?");
+    eprintln!("  1) codex");
+    eprintln!("  2) claude-code");
+    eprintln!("  3) both");
+    eprint!("Select one or more [3]: ");
+    std::io::stderr().flush()?;
+    let mut input = String::new();
+    std::io::stdin().read_line(&mut input)?;
+    parse_init_target_selection(&input)
+}
+
+fn parse_init_target_selection(input: &str) -> Result<Vec<InitTarget>> {
+    let value = input.trim();
+    if value.is_empty() || value == "3" || value.eq_ignore_ascii_case("both") {
+        return Ok(vec![InitTarget::Codex, InitTarget::ClaudeCode]);
+    }
+    let mut targets = Vec::new();
+    for token in value.split([',', ' ']).filter(|token| !token.is_empty()) {
+        match token {
+            "1" | "codex" => push_init_target(&mut targets, InitTarget::Codex),
+            "2" | "claude-code" | "claude" => {
+                push_init_target(&mut targets, InitTarget::ClaudeCode)
+            }
+            "3" | "both" => {
+                push_init_target(&mut targets, InitTarget::Codex);
+                push_init_target(&mut targets, InitTarget::ClaudeCode);
+            }
+            _ => bail!("unsupported selection `{token}`"),
+        }
+    }
+    Ok(targets)
+}
+
+fn push_init_target(targets: &mut Vec<InitTarget>, target: InitTarget) {
+    if !targets
+        .iter()
+        .any(|candidate| candidate.name() == target.name())
+    {
+        targets.push(target);
+    }
 }
 
 fn refs(ws: &Workspace, args: RefsArgs) -> Result<()> {
@@ -1410,5 +1506,31 @@ mod tests {
     #[test]
     fn detects_raw_empty_reference_result() {
         assert!(empty_reference_result(&json!({})));
+    }
+
+    #[test]
+    fn parses_multi_cli_init_selection() {
+        let targets = parse_init_target_selection("1,2").unwrap();
+
+        assert_eq!(
+            targets
+                .iter()
+                .map(|target| target.name())
+                .collect::<Vec<_>>(),
+            vec!["codex", "claude-code"]
+        );
+    }
+
+    #[test]
+    fn parses_named_cli_init_selection() {
+        let targets = parse_init_target_selection("codex claude-code").unwrap();
+
+        assert_eq!(
+            targets
+                .iter()
+                .map(|target| target.name())
+                .collect::<Vec<_>>(),
+            vec!["codex", "claude-code"]
+        );
     }
 }
