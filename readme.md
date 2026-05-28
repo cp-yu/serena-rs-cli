@@ -81,6 +81,70 @@ If the configured/default port is busy, the adapter searches the next available 
 
 Runtime state is project-local and agent-agnostic under `.serena/serena-rs/`. It is shared by Codex, Claude Code, and any other caller using `serena-rs`.
 
+## Agent Setup Tutorial
+
+Use this flow when adding `serena-rs` to another repository so coding agents can use semantic code navigation without registering Serena as a global MCP server.
+
+1. Copy the adapter files into the target project:
+
+```text
+.codex/serena-rs.toml
+.codex/serena-rs-context.yml
+.codex/tools/serena-rs.sh
+.codex/tools/serena-rs/
+.codex/skills/serena-lsp-tools/
+```
+
+2. Build the local binary:
+
+```bash
+cargo build --release --manifest-path .codex/tools/serena-rs/Cargo.toml
+```
+
+3. Run a smoke test from the project root:
+
+```bash
+.codex/tools/serena-rs.sh health
+.codex/tools/serena-rs.sh overview src/main.rs
+.codex/tools/serena-rs.sh diagnostics src/main.rs
+```
+
+Replace `src/main.rs` with a real source file in the target project.
+
+`health` should return `ok: true` and `tools: 9`. That proves the underlying Serena MCP server is running with the restricted semantic-tool context.
+
+4. Tell the agent when to use it.
+
+For Codex, keep `.codex/skills/serena-lsp-tools/SKILL.md` available and ask the agent to use `serena-lsp-tools` for semantic navigation. If the agent does not auto-load repo-local skills, put the instruction below in `AGENTS.md`, `CLAUDE.md`, or the equivalent project instruction file:
+
+```text
+Use `.codex/tools/serena-rs.sh` for semantic code navigation:
+- Start with `overview <file>` before reading large source files.
+- Use `symbol <name-or-path> [--file <file>]` to locate symbols.
+- Use `declaration <file:line[:col]>` and `refs <file:line[:col]>` for LSP-style navigation.
+- Use `diagnostics <file>` before and after risky edits.
+- If `refs` warns that Serena returned `{}`, verify with `rg <symbol>` before treating the symbol as unused.
+- Do not use this adapter for shell, file search, file reads, or memory operations.
+```
+
+5. Use the agent workflow:
+
+```bash
+.codex/tools/serena-rs.sh overview src/main.rs
+.codex/tools/serena-rs.sh symbol UserService --file src/main.rs
+.codex/tools/serena-rs.sh declaration src/main.rs:42:7
+.codex/tools/serena-rs.sh refs src/main.rs:42:7
+.codex/tools/serena-rs.sh diagnostics src/main.rs
+```
+
+Write commands are available only when the agent explicitly passes `--apply`:
+
+```bash
+.codex/tools/serena-rs.sh rename src/main.rs@UserService RenamedUserService --apply
+```
+
+Use `.codex/tools/serena-rs.sh stop` when you want to shut down the project-local Serena server.
+
 ## Output
 
 Successful commands print JSON:
@@ -285,6 +349,7 @@ Copy these paths:
 
 ```text
 .codex/serena-rs.toml
+.codex/serena-rs-context.yml
 .codex/tools/serena-rs.sh
 .codex/tools/serena-rs/
 .codex/skills/serena-lsp-tools/
